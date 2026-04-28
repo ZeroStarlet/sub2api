@@ -351,6 +351,22 @@ func (h *AccountHandler) List(c *gin.Context) {
 	result := make([]AccountWithConcurrency, len(accounts))
 	for i := range accounts {
 		acc := &accounts[i]
+
+		// Inject telemetry privacy stats into Extra before DTO conversion
+		if acc.Extra != nil {
+			if tp, ok := acc.Extra["telemetry_privacy"]; ok {
+				if enabled, _ := tp.(bool); enabled {
+					stats := service.GetTelemetryPrivacyStats(acc.ID)
+					cloned := make(map[string]any, len(acc.Extra)+1)
+					for k, v := range acc.Extra {
+						cloned[k] = v
+					}
+					cloned["telemetry_privacy_stats"] = stats
+					acc.Extra = cloned
+				}
+			}
+		}
+
 		item := AccountWithConcurrency{
 			Account:            dto.AccountFromService(acc),
 			CurrentConcurrency: concurrencyCounts[acc.ID],

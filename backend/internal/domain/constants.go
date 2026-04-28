@@ -140,3 +140,15 @@ var DefaultBedrockModelMapping = map[string]string{
 	"claude-haiku-4-5":          "us.anthropic.claude-haiku-4-5-20251001-v1:0",
 	"claude-haiku-4-5-20251001": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
 }
+
+// Telemetry privacy constants (Anthropic OAuth/SetupToken only)
+const (
+	// ExtraKeyTelemetryPrivacy is the extra map key for enabling telemetry stripping.
+	ExtraKeyTelemetryPrivacy = "telemetry_privacy"
+	// DefaultTelemetryPrivacyDeviceID is the canonical device_id when privacy is enabled (64 hex chars).
+	DefaultTelemetryPrivacyDeviceID = "0000000000000000000000000000000000000000000000000000000000000000"
+	// DefaultTelemetryPrivacyAccountUUID is the canonical account UUID.
+	DefaultTelemetryPrivacyAccountUUID = "00000000-0000-0000-0000-000000000000"
+	// DefaultTelemetryPrivacySessionID is the canonical session ID.
+	DefaultTelemetryPrivacySessionID = "00000000-0000-0000-0000-000000000000"
+)

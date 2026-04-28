@@ -1233,7 +1233,7 @@ func (s *GatewayService) applyClaudeCodeOAuthMimicryToBody(
 
 	normalizeOpts := claudeOAuthNormalizeOptions{stripSystemCacheControl: !systemRewritten}
 
-	if s.identityService != nil && c != nil && c.Request != nil {
+	if s.identityService != nil && c != nil && c.Request != nil && !IsAnthropicTelemetryPrivacyEnabled(account) {
 		if fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, c.Request.Header); err == nil && fp != nil {
 			mimicMPT := false
 			if s.settingService != nil {
@@ -4347,6 +4347,18 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		return s.forwardBedrock(ctx, c, account, parsed, startTime)
 	}
 
+	// Telemetry privacy: silently drop telemetry/logging endpoints before any upstream work.
+	if account != nil && IsAnthropicTelemetryPrivacyEnabled(account) && c != nil && c.Request != nil {
+		if drop, category := ShouldDropTelemetryEndpoint(c.Request.URL.Path, c.Request.Host); drop {
+			logTelemetryDrop(account, category, c.Request.URL.Path, c.Request.Host)
+			c.Data(http.StatusOK, "application/json", []byte(`{"status":"ok"}`))
+			return &ForwardResult{
+				Stream:   false,
+				Duration: time.Since(startTime),
+			}, nil
+		}
+	}
+
 	// Beta policy: evaluate once; block check + cache filter set for buildUpstreamRequest.
 	// Always overwrite the cache to prevent stale values from a previous retry with a different account.
 	if account.Platform == PlatformAnthropic && c != nil {
@@ -4402,7 +4414,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		// 未重写时（haiku / 已含 CC 前缀）剥离客户端 cache_control，与原有行为一致。
 		// 两种情况下 enforceCacheControlLimit 都会兜底处理上限。
 		normalizeOpts := claudeOAuthNormalizeOptions{stripSystemCacheControl: !systemRewritten}
-		if s.identityService != nil {
+		if s.identityService != nil && !IsAnthropicTelemetryPrivacyEnabled(account) {
 			fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, c.Request.Header)
 			if err == nil && fp != nil {
 				// metadata 透传开启时跳过 metadata 注入
@@ -5968,7 +5980,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	if s.settingService != nil {
 		enableFP, enableMPT, enableCCH = s.settingService.GetGatewayForwardingSettings(ctx)
 	}
-	if account.IsOAuth() && s.identityService != nil {
+	if account.IsOAuth() && s.identityService != nil && !IsAnthropicTelemetryPrivacyEnabled(account) {
 		// 1. 获取或创建指纹（包含随机生成的ClientID）
 		fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, clientHeaders)
 		if err != nil {
@@ -6002,6 +6014,14 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		body = signBillingHeaderCCH(body)
 	}
 
+	// Telemetry privacy: strip identifying information from request body.
+	if account.IsOAuth() && IsAnthropicTelemetryPrivacyEnabled(account) {
+		body = RewriteTelemetryUserID(body)
+		body = StripTelemetryBillingHeader(body)
+		body = StripTelemetryEnvInfo(body)
+		logBodyStrip(account)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -6019,7 +6039,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	// Parrot 的 build_upstream_headers 只发 9 个精确 header，不透传任何客户端 header。
 	// 透传客户端 header 会引入不一致的 x-stainless-* / anthropic-beta / user-agent /
 	// x-claude-code-session-id 等值，和我们注入的伪装 header 冲突，被 Anthropic 判 third-party。
-	if tokenType != "oauth" || !mimicClaudeCode {
+	if (tokenType != "oauth" || !mimicClaudeCode) && !IsAnthropicTelemetryPrivacyEnabled(account) {
 		for key, values := range clientHeaders {
 			lowerKey := strings.ToLower(key)
 			if allowedHeaders[lowerKey] {
@@ -6032,7 +6052,8 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	}
 
 	// OAuth账号：应用缓存的指纹到请求头（覆盖白名单透传的头）
-	if fingerprint != nil {
+	// Skip when privacy mode is enabled — canonical headers are applied instead.
+	if fingerprint != nil && !IsAnthropicTelemetryPrivacyEnabled(account) {
 		s.identityService.ApplyFingerprint(req, fingerprint)
 	}
 
@@ -6045,6 +6066,13 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	}
 	if tokenType == "oauth" {
 		applyClaudeOAuthHeaderDefaults(req)
+
+		// Telemetry privacy: replace all identifying headers with canonical values.
+		if IsAnthropicTelemetryPrivacyEnabled(account) {
+			StripTelemetryRequestHeaders(req.Header)
+			ApplyCanonicalHeaders(req.Header)
+			logHeadersStrip(account)
+		}
 	}
 
 	// Build effective drop set: merge static defaults with dynamic beta policy filter rules
@@ -6053,7 +6081,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 
 	// 处理 anthropic-beta header（OAuth 账号需要包含 oauth beta）
 	if tokenType == "oauth" {
-		if mimicClaudeCode {
+		if mimicClaudeCode && !IsAnthropicTelemetryPrivacyEnabled(account) {
 			// 非 Claude Code 客户端：按 opencode 的策略处理：
 			// - 强制 Claude Code 指纹相关请求头（尤其是 user-agent/x-stainless/x-app）
 			// - 保留 incoming beta 的同时，确保 OAuth 所需 beta 存在
@@ -9158,7 +9186,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		ctEnableFP, ctEnableMPT, ctEnableCCH = s.settingService.GetGatewayForwardingSettings(ctx)
 	}
 	var ctFingerprint *Fingerprint
-	if account.IsOAuth() && s.identityService != nil {
+	if account.IsOAuth() && s.identityService != nil && !IsAnthropicTelemetryPrivacyEnabled(account) {
 		fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, clientHeaders)
 		if err == nil {
 			ctFingerprint = fp
@@ -9181,6 +9209,14 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		body = signBillingHeaderCCH(body)
 	}
 
+	// Telemetry privacy: strip identifying information from request body.
+	if account.IsOAuth() && IsAnthropicTelemetryPrivacyEnabled(account) {
+		body = RewriteTelemetryUserID(body)
+		body = StripTelemetryBillingHeader(body)
+		body = StripTelemetryEnvInfo(body)
+		logBodyStrip(account)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -9194,18 +9230,22 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	}
 
 	// 白名单透传 headers（恢复真实 wire casing）
-	for key, values := range clientHeaders {
-		lowerKey := strings.ToLower(key)
-		if allowedHeaders[lowerKey] {
-			wireKey := resolveWireCasing(key)
-			for _, v := range values {
-				addHeaderRaw(req.Header, wireKey, v)
+	// Skip when privacy mode is enabled — canonical headers are applied instead.
+	if !IsAnthropicTelemetryPrivacyEnabled(account) {
+		for key, values := range clientHeaders {
+			lowerKey := strings.ToLower(key)
+			if allowedHeaders[lowerKey] {
+				wireKey := resolveWireCasing(key)
+				for _, v := range values {
+					addHeaderRaw(req.Header, wireKey, v)
+				}
 			}
 		}
 	}
 
 	// OAuth 账号：应用指纹到请求头（受设置开关控制）
-	if ctEnableFP && ctFingerprint != nil {
+	// Skip when privacy mode is enabled.
+	if ctEnableFP && ctFingerprint != nil && !IsAnthropicTelemetryPrivacyEnabled(account) {
 		s.identityService.ApplyFingerprint(req, ctFingerprint)
 	}
 
@@ -9218,6 +9258,13 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	}
 	if tokenType == "oauth" {
 		applyClaudeOAuthHeaderDefaults(req)
+
+		// Telemetry privacy: replace all identifying headers with canonical values.
+		if IsAnthropicTelemetryPrivacyEnabled(account) {
+			StripTelemetryRequestHeaders(req.Header)
+			ApplyCanonicalHeaders(req.Header)
+			logHeadersStrip(account)
+		}
 	}
 
 	// Build effective drop set for count_tokens: merge static defaults with dynamic beta policy filter rules
@@ -9225,7 +9272,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 
 	// OAuth 账号：处理 anthropic-beta header
 	if tokenType == "oauth" {
-		if mimicClaudeCode {
+		if mimicClaudeCode && !IsAnthropicTelemetryPrivacyEnabled(account) {
 			applyClaudeCodeMimicHeaders(req, false)
 
 			incomingBeta := getHeaderRaw(req.Header, "anthropic-beta")

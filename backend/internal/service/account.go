@@ -148,6 +148,7 @@ func (a *Account) IsOAuth() bool {
 // IsPrivacySet 检查账号的 privacy 是否已成功设置。
 // OpenAI: privacy_mode == "training_off"
 // Antigravity: privacy_mode == "privacy_set"
+// Anthropic: telemetry_privacy == true
 // 其他平台: 无 privacy 概念，始终返回 true
 func (a *Account) IsPrivacySet() bool {
 	switch a.Platform {
@@ -155,6 +156,11 @@ func (a *Account) IsPrivacySet() bool {
 		return a.getExtraString("privacy_mode") == PrivacyModeTrainingOff
 	case PlatformAntigravity:
 		return a.getExtraString("privacy_mode") == AntigravityPrivacySet
+	case PlatformAnthropic:
+		if a.IsAnthropicOAuthOrSetupToken() {
+			return a.IsTelemetryPrivacyEnabled()
+		}
+		return true
 	default:
 		return true
 	}
@@ -1465,6 +1471,16 @@ func (a *Account) IsSessionIDMaskingEnabled() bool {
 		}
 	}
 	return false
+}
+
+// IsTelemetryPrivacyEnabled returns true if telemetry privacy stripping is enabled
+// for this account. Only applicable to Anthropic OAuth/SetupToken accounts.
+func (a *Account) IsTelemetryPrivacyEnabled() bool {
+	if a == nil || !a.IsAnthropicOAuthOrSetupToken() || a.Extra == nil {
+		return false
+	}
+	enabled, ok := a.Extra[domain.ExtraKeyTelemetryPrivacy].(bool)
+	return ok && enabled
 }
 
 // IsCustomBaseURLEnabled 检查是否启用自定义 base URL 中继转发

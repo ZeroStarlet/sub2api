@@ -2645,6 +2645,7 @@ export default {
       schedulableHint: '开启后账号参与API请求调度',
       schedulableEnabled: '调度已开启',
       schedulableDisabled: '调度已关闭',
+      telemetryPrivacyStatus: '已拦截{count}次',
       failedToToggleSchedulable: '切换调度状态失败',
       groupCountTotal: '共 {count} 个分组',
       columns: {
@@ -3146,6 +3147,10 @@ export default {
         sessionIdMasking: {
           label: '会话 ID 伪装',
           hint: '启用后将在 15 分钟内固定 metadata.user_id 中的 session ID，使上游认为请求来自同一会话'
+        },
+        telemetryPrivacy: {
+          label: '遥测隐私',
+          hint: '从上游请求中剥离识别头和系统提示元数据，拦截事件日志、Datadog 遥测及上游代理请求。'
         },
         cacheTTLOverride: {
           label: '缓存 TTL 强制替换',

@@ -828,6 +828,9 @@ export interface Account {
   // 会话ID伪装（仅 Anthropic OAuth/SetupToken 账号有效）
   // 启用后将在15分钟内固定 metadata.user_id 中的 session ID
   session_id_masking_enabled?: boolean | null
+  // 遥测隐私（仅限 Anthropic OAuth/SetupToken 账号）
+  // 启用后剥离上游请求中的识别头部信息、系统提示元数据，并拦截事件日志和 Datadog 遥测。
+  telemetry_privacy?: boolean | null
 
   // 缓存 TTL 强制替换（仅 Anthropic OAuth/SetupToken 账号有效）
   cache_ttl_override_enabled?: boolean | null

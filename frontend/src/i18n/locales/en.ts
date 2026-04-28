@@ -2568,6 +2568,7 @@ export default {
       schedulableHint: 'Enable to include this account in API request scheduling',
       schedulableEnabled: 'Scheduling enabled',
       schedulableDisabled: 'Scheduling disabled',
+      telemetryPrivacyStatus: 'Blocked {count}',
       failedToToggleSchedulable: 'Failed to toggle scheduling status',
       groupCountTotal: '{count} groups total',
       platforms: {
@@ -3005,6 +3006,10 @@ export default {
         sessionIdMasking: {
           label: 'Session ID Masking',
           hint: 'When enabled, fixes the session ID in metadata.user_id for 15 minutes, making upstream think requests come from the same session'
+        },
+        telemetryPrivacy: {
+          label: 'Telemetry Privacy',
+          hint: 'Strip identifying headers and system prompt metadata from upstream requests. Drops event logging, Datadog telemetry, and upstream proxy requests.'
         },
         cacheTTLOverride: {
           label: 'Cache TTL Override',
