@@ -3014,6 +3014,7 @@ function loadQuotaControlSettings(account: Account) {
   tlsFingerprintEnabled.value = false
   tlsFingerprintProfileId.value = null
   sessionIdMaskingEnabled.value = false
+  telemetryPrivacyEnabled.value = false
   cacheTTLOverrideEnabled.value = false
   cacheTTLOverrideTarget.value = '5m'
   customBaseUrlEnabled.value = false
@@ -3065,7 +3066,7 @@ function loadQuotaControlSettings(account: Account) {
   }
 
   // Load telemetry privacy setting
-  if (account.telemetry_privacy === true) {
+  if (account.extra?.telemetry_privacy === true) {
     telemetryPrivacyEnabled.value = true
   }
 
@@ -3583,6 +3584,8 @@ const handleSubmit = async () => {
       } else {
         delete newExtra.telemetry_privacy
       }
+      // Strip runtime stats to prevent persisting counters into stored extra
+      delete newExtra.telemetry_privacy_stats
 
       // Cache TTL override setting
       if (cacheTTLOverrideEnabled.value) {
