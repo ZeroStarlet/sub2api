@@ -2569,7 +2569,7 @@ export default {
       schedulableEnabled: 'Scheduling enabled',
       schedulableDisabled: 'Scheduling disabled',
       telemetryPrivacyStatus: 'Protected {count}×',
-      telemetryPrivacyTooltip: 'Dropped: {dropped} | Stripped: {stripped}',
+      telemetryPrivacyTooltip: 'Dropped: {dropped} — Stripped: {stripped}',
       failedToToggleSchedulable: 'Failed to toggle scheduling status',
       groupCountTotal: '{count} groups total',
       platforms: {

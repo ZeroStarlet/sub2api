@@ -2646,7 +2646,7 @@ export default {
       schedulableEnabled: '调度已开启',
       schedulableDisabled: '调度已关闭',
       telemetryPrivacyStatus: '已保护 {count} 次',
-      telemetryPrivacyTooltip: '遥测丢弃: {dropped} 次 | 请求脱敏: {stripped} 次',
+      telemetryPrivacyTooltip: '遥测丢弃: {dropped} 次 — 请求脱敏: {stripped} 次',
       failedToToggleSchedulable: '切换调度状态失败',
       groupCountTotal: '共 {count} 个分组',
       columns: {
