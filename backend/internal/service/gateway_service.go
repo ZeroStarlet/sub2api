@@ -4350,7 +4350,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	// Telemetry privacy: silently drop telemetry/logging endpoints before any upstream work.
 	if account != nil && IsAnthropicTelemetryPrivacyEnabled(account) && c != nil && c.Request != nil {
 		if drop, category := ShouldDropTelemetryEndpoint(c.Request.URL.Path, c.Request.Host); drop {
-			logTelemetryDrop(account, category, c.Request.URL.Path, c.Request.Host)
+			LogAccountTelemetryDrop(account, category, c.Request.URL.Path, c.Request.Host)
 			c.Data(http.StatusOK, "application/json", []byte(`{"status":"ok"}`))
 			return &ForwardResult{
 				Stream:   false,
@@ -6018,6 +6018,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	if account.IsOAuth() && IsAnthropicTelemetryPrivacyEnabled(account) {
 		body = RewriteTelemetryUserID(body)
 		body = StripTelemetryBillingHeader(body)
+		body = StripTelemetrySystemReminders(body)
 		body = StripTelemetryEnvInfo(body)
 		logBodyStrip(account)
 	}
@@ -9213,6 +9214,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	if account.IsOAuth() && IsAnthropicTelemetryPrivacyEnabled(account) {
 		body = RewriteTelemetryUserID(body)
 		body = StripTelemetryBillingHeader(body)
+		body = StripTelemetrySystemReminders(body)
 		body = StripTelemetryEnvInfo(body)
 		logBodyStrip(account)
 	}

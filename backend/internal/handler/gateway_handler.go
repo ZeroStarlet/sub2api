@@ -1864,3 +1864,49 @@ func (h *GatewayHandler) getUserMsgQueueMode(account *service.Account, parsed *s
 	}
 	return mode
 }
+
+// TelemetryIntercept 遥测隐私端点拦截处理器。
+// 拦截 /api/oauth/account、/api/claude_code_grove、/upstreamproxy 等遥测路径。
+// 通过 SelectAccount 获取分组中一个可用账号，若该账号启用了遥测隐私则静默返回 200。
+// 注意：仅检查调度选中的单个账号，混合分组中应确保所有账号隐私策略一致。
+// 若未启用遥测隐私，返回 404 保持与旧版本行为一致（该路径原本就无路由）。
+// /api/event_logging/batch 已由 common.go 无条件静默丢弃，无需认证即可拦截。
+func (h *GatewayHandler) TelemetryIntercept(c *gin.Context) {
+	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
+	if !ok {
+		c.Status(http.StatusUnauthorized)
+		return
+	}
+
+	// 轻量级调度：获取分组中任一可用账号以检查遥测隐私开关
+	// 使用空 sessionHash 进行快速查询（无粘性会话绑定）
+	account, err := h.gatewayService.SelectAccount(c.Request.Context(), apiKey.GroupID, "")
+	if err != nil || account == nil {
+		// 无可用账号时仍检查路径是否匹配遥测特征，匹配则静默丢弃
+		// 这作为兜底：即使调度失败，也不让遥测请求通过
+		if c.Request != nil && c.Request.URL != nil {
+			path := c.Request.URL.Path
+			if drop, _ := service.ShouldDropTelemetryEndpoint(path, c.Request.Host); drop {
+				c.Data(http.StatusOK, "application/json", []byte(`{"status":"ok"}`))
+				return
+			}
+		}
+		// 非遥测路径但无可用账号：返回 404
+		c.Status(http.StatusNotFound)
+		return
+	}
+
+	// 检查账号是否启用了遥测隐私
+	if service.IsAnthropicTelemetryPrivacyEnabled(account) {
+		if c.Request != nil && c.Request.URL != nil {
+			if drop, category := service.ShouldDropTelemetryEndpoint(c.Request.URL.Path, c.Request.Host); drop {
+				service.LogAccountTelemetryDrop(account, category, c.Request.URL.Path, c.Request.Host)
+				c.Data(http.StatusOK, "application/json", []byte(`{"status":"ok"}`))
+				return
+			}
+		}
+	}
+
+	// 未启用遥测隐私或路径不匹配：返回 404 保持与旧版本行为一致
+	c.Status(http.StatusNotFound)
+}

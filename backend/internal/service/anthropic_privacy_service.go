@@ -15,8 +15,8 @@ import (
 )
 
 var (
-	rePlatform   = regexp.MustCompile(`(?im)^Platform:\s*\S+`)
-	reShell      = regexp.MustCompile(`(?im)^Shell:\s*\S+`)
+	rePlatform   = regexp.MustCompile(`(?im)^Platform:\s*[^\n]+`)
+	reShell      = regexp.MustCompile(`(?im)^Shell:\s*[^\n]+`)
 	reOSVersion  = regexp.MustCompile(`(?im)^OS Version:\s*[^\n]+`)
 	reWorkingDir = regexp.MustCompile(`(?mi)^(Primary )?Working directory:\s*[^\n]+`)
 	reHomeDir    = regexp.MustCompile(`(?mi)/(?:Users|home)/[^/\s]+/`)
@@ -119,8 +119,9 @@ func ShouldDropTelemetryEndpoint(path, host string) (drop bool, category string)
 	return false, ""
 }
 
-// logTelemetryDrop logs a telemetry drop event and increments the counter.
-func logTelemetryDrop(account *Account, category, path, host string) {
+// LogAccountTelemetryDrop logs a telemetry drop event and increments the per-account counter.
+// Exported for use by the handler layer (TelemetryIntercept).
+func LogAccountTelemetryDrop(account *Account, category, path, host string) {
 	c := getAccountCounters(account.ID)
 	n := c.droppedTelemetry.Add(1)
 	slog.Info("telemetry_privacy_drop",
@@ -265,6 +266,92 @@ func StripTelemetryEnvInfo(body []byte) []byte {
 	return body
 }
 
+// reSystemReminder 匹配 <system-reminder>...</system-reminder> 标签及其内容。
+// Claude Code 将环境信息注入到用户消息中的 <system-reminder> 块内，
+// 必须将其中的 Platform/Shell/OS Version/Working Directory/Home Dir 等字段替换为规范值。
+var reSystemReminder = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
+
+// rewriteSystemReminderContent 对单段 text 内容中的 <system-reminder> 块执行环境信息替换。
+// 返回替换后的文本；若未匹配到 <system-reminder> 标签则返回原文本。
+func rewriteSystemReminderContent(text string) string {
+	return reSystemReminder.ReplaceAllStringFunc(text, func(match string) string {
+		rewritten := match
+		rewritten = rePlatform.ReplaceAllString(rewritten, "Platform: unknown")
+		rewritten = reShell.ReplaceAllString(rewritten, "Shell: unknown")
+		rewritten = reOSVersion.ReplaceAllString(rewritten, "OS Version: unknown")
+		rewritten = reWorkingDir.ReplaceAllString(rewritten, "Working directory: /workspace")
+		rewritten = reHomeDir.ReplaceAllString(rewritten, "/home/user/")
+		return rewritten
+	})
+}
+
+// StripTelemetrySystemReminders 重写消息中 <system-reminder> 块内的环境识别信息。
+// Claude Code 会在用户消息的 text content 块中嵌入 <system-reminder> 标签，
+// 其中包含 Platform、Shell、OS Version、Working Directory、Home Dir 等环境指纹。
+// 此函数遍历所有 messages，在 text 类型的 content 块中查找并替换这些标签的内容。
+func StripTelemetrySystemReminders(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return body
+	}
+
+	modified := false
+	for i, msg := range messages.Array() {
+		content := msg.Get("content")
+
+		// 处理 string 类型 content（Anthropic API 支持纯字符串消息）
+		if content.Type == gjson.String {
+			text := content.String()
+			if text == "" {
+				continue
+			}
+			newText := rewriteSystemReminderContent(text)
+			if newText != text {
+				path := fmt.Sprintf("messages.%d.content", i)
+				var err error
+				body, err = sjson.SetBytes(body, path, newText)
+				if err != nil {
+					continue
+				}
+				modified = true
+			}
+			continue
+		}
+
+		// 处理 array 类型 content（标准多 block 消息格式）
+		if !content.IsArray() {
+			continue
+		}
+
+		for j, block := range content.Array() {
+			text := block.Get("text").String()
+			if text == "" {
+				continue
+			}
+
+			newText := rewriteSystemReminderContent(text)
+			if newText != text {
+				path := fmt.Sprintf("messages.%d.content.%d.text", i, j)
+				var err error
+				body, err = sjson.SetBytes(body, path, newText)
+				if err != nil {
+					continue
+				}
+				modified = true
+			}
+		}
+	}
+
+	if !modified {
+		return body
+	}
+	return body
+}
+
 // StripTelemetryRequestHeaders removes telemetry-related headers from the request.
 func StripTelemetryRequestHeaders(h http.Header) {
 	// Collect keys to delete first (can't delete while iterating)
@@ -279,6 +366,7 @@ func StripTelemetryRequestHeaders(h http.Header) {
 			lower == "x-claude-remote-session-id" ||
 			lower == "x-client-app" ||
 			lower == "x-app" ||
+			lower == "x-anthropic-billing-header" ||
 			lower == "anthropic-dangerous-direct-browser-access" ||
 			lower == "accept-language" ||
 			lower == "sec-fetch-mode" {

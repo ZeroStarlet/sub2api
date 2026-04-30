@@ -213,6 +213,33 @@ func RegisterGatewayRoutes(
 		antigravityV1Beta.POST("/models/*modelAction", h.Gateway.GeminiV1BetaModels)
 	}
 
+	// 遥测隐私拦截路由注册
+	registerTelemetryPrivacyRoutes(r, h, bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic)
+
+}
+
+// 遥测隐私端点拦截路由。
+// 这些路径在原版 sub2api 中无路由（返回 404），添加后使遥测隐私开关能够
+// 拦截 Claude Code 发送的事件日志、OAuth 账户信息、Datadog 遥测等请求。
+// 中间件链与 /v1 网关路由一致，确保 API Key 认证和分组校验。
+func registerTelemetryPrivacyRoutes(r *gin.Engine, h *handler.Handlers, bodyLimit gin.HandlerFunc, clientRequestID gin.HandlerFunc, opsErrorLogger gin.HandlerFunc, endpointNorm gin.HandlerFunc, apiKeyAuth gin.HandlerFunc, requireGroupAnthropic gin.HandlerFunc) {
+	telemetryGroup := r.Group("/api")
+	telemetryGroup.Use(bodyLimit)
+	telemetryGroup.Use(clientRequestID)
+	telemetryGroup.Use(opsErrorLogger)
+	telemetryGroup.Use(endpointNorm)
+	telemetryGroup.Use(apiKeyAuth)
+	telemetryGroup.Use(requireGroupAnthropic)
+	{
+		// /api/event_logging/batch 已由 common.go 无条件静默丢弃（更安全：无需认证即可拦截）
+		// Grove 设置/OAuth 账户信息端点
+		telemetryGroup.POST("/oauth/account", h.Gateway.TelemetryIntercept)
+		telemetryGroup.GET("/claude_code_grove", h.Gateway.TelemetryIntercept)
+	}
+
+	// 独立路径（不在 /api 前缀下）
+	r.POST("/upstreamproxy", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuth, requireGroupAnthropic, h.Gateway.TelemetryIntercept)
+	r.POST("/upstreamproxy/*subpath", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuth, requireGroupAnthropic, h.Gateway.TelemetryIntercept)
 }
 
 // getGroupPlatform extracts the group platform from the API Key stored in context.

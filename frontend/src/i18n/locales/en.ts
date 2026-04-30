@@ -2568,7 +2568,8 @@ export default {
       schedulableHint: 'Enable to include this account in API request scheduling',
       schedulableEnabled: 'Scheduling enabled',
       schedulableDisabled: 'Scheduling disabled',
-      telemetryPrivacyStatus: 'Blocked {count}',
+      telemetryPrivacyStatus: 'Protected {count}×',
+      telemetryPrivacyTooltip: 'Dropped: {dropped} | Stripped: {stripped}',
       failedToToggleSchedulable: 'Failed to toggle scheduling status',
       groupCountTotal: '{count} groups total',
       platforms: {
