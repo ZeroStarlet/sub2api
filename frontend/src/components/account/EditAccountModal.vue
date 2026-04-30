@@ -1909,8 +1909,10 @@
               />
             </button>
           </div>
+        </div>
 
-          <!-- Telemetry Privacy -->
+        <!-- Telemetry Privacy -->
+        <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
           <div class="flex items-center justify-between">
             <div>
               <label class="input-label mb-0">{{ t('admin.accounts.quotaControl.telemetryPrivacy.label') }}</label>
