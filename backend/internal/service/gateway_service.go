@@ -1449,12 +1449,14 @@ func applyAnthropicTelemetryPrivacyHeaderFingerprint(req *http.Request) bool {
 // recordAnthropicTelemetryPrivacyProtection 记录一次账号级遥测隐私保护。
 // 这里的“保护一次”指某个 Anthropic OAuth/SetupToken 上游请求实际执行过
 // metadata.user_id 或遥测 header 的匿名化。计数只按账号累加，不包含下游用户、
-// 原始会话、请求 ID 或正文内容；当 DeferredService 可用时走延迟批量写入，
+// 原始会话、请求 ID、模型或正文内容；当 DeferredService 可用时走延迟批量写入，
 // 否则仅在仓储实现支持原子计数接口时同步写入，失败只记录日志不影响转发。
-func (s *GatewayService) recordAnthropicTelemetryPrivacyProtection(ctx context.Context, account *Account, protected bool) {
+func (s *GatewayService) recordAnthropicTelemetryPrivacyProtection(ctx context.Context, account *Account, req *http.Request, endpoint string, bodyProtected, headerProtected bool) {
+	protected := bodyProtected || headerProtected
 	if !protected || account == nil || !account.IsTelemetryPrivacyEnabled() || account.ID <= 0 {
 		return
 	}
+	logAnthropicTelemetryPrivacyProtection(account, req, endpoint, bodyProtected, headerProtected)
 	if s != nil && s.deferredService != nil {
 		if _, ok := s.deferredService.accountRepo.(accountExtraCounterRepository); ok {
 			s.deferredService.ScheduleTelemetryPrivacyProtection(account.ID)
@@ -1473,6 +1475,45 @@ func (s *GatewayService) recordAnthropicTelemetryPrivacyProtection(ctx context.C
 	if err := repo.IncrementExtraCounter(writeCtx, account.ID, AccountExtraTelemetryPrivacyProtectedCount, 1); err != nil {
 		logger.LegacyPrintf("service.gateway", "警告：账号 %d 的遥测隐私保护计数写入失败：%v", account.ID, err)
 	}
+}
+
+// logAnthropicTelemetryPrivacyProtection 写入可在“运维监控 / 系统日志”检索的审计日志。
+// 日志只记录本次是否改写了 body、header、最终路径和账号 ID，不记录原始或改写后的
+// device_id、session_id、account_uuid、x-client-request-id，也不记录模型或请求正文；这样管理员能
+// 追踪保护是否生效，同时不会把遥测身份重新落库造成二次隐私风险。
+func logAnthropicTelemetryPrivacyProtection(account *Account, req *http.Request, endpoint string, bodyProtected, headerProtected bool) {
+	if account == nil {
+		return
+	}
+	path := ""
+	if req != nil && req.URL != nil {
+		path = req.URL.Path
+	}
+	logger.WriteSinkEvent("info", "service.gateway.audit.telemetry_privacy", "遥测隐私保护已处理", map[string]any{
+		"account_id":                       account.ID,
+		"account_type":                     account.Type,
+		"platform":                         account.Platform,
+		"endpoint":                         strings.TrimSpace(endpoint),
+		"path":                             path,
+		"telemetry_privacy":                true,
+		"privacy_scope":                    "Anthropic 平台 OAuth / Setup Token 账号",
+		"body_protected":                   bodyProtected,
+		"metadata_user_id_processed":       bodyProtected,
+		"metadata_device_id_strategy":      "按账号编号派生稳定哈希",
+		"metadata_account_uuid_strategy":   "清空",
+		"metadata_session_id_strategy":     "按账号编号派生单一稳定会话",
+		"header_protected":                 headerProtected,
+		"header_fingerprint_strategy":      "强制使用官方客户端默认头指纹",
+		"user_agent_strategy":              "官方客户端默认值",
+		"x_stainless_strategy":             "官方客户端默认值",
+		"x_app_strategy":                   "官方客户端默认值",
+		"x_claude_code_session_strategy":   "沿用已保护会话或账号级稳定会话",
+		"x_client_request_id_strategy":     "由中转服务重新生成单次请求编号",
+		"authorization_protected":          false,
+		"anthropic_beta_protected":         false,
+		"model_or_messages_body_protected": false,
+		"sensitive_values_logged":          false,
+	})
 }
 
 // GenerateSessionUUID creates a deterministic UUID4 from a seed string.
@@ -6253,7 +6294,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		}
 	}
 	telemetryPrivacyHeaderProtected := sanitizeAnthropicTelemetryPrivacyHeaders(req, account, telemetryPrivacyUserID)
-	s.recordAnthropicTelemetryPrivacyProtection(ctx, account, telemetryPrivacyBodyProtected || telemetryPrivacyHeaderProtected)
+	s.recordAnthropicTelemetryPrivacyProtection(ctx, account, req, "messages", telemetryPrivacyBodyProtected, telemetryPrivacyHeaderProtected)
 
 	// === DEBUG: 打印上游转发请求（headers + body 摘要），与 CLIENT_ORIGINAL 对比 ===
 	s.debugLogGatewaySnapshot("UPSTREAM_FORWARD", req.Header, body, map[string]string{
@@ -9426,7 +9467,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		}
 	}
 	ctTelemetryPrivacyHeaderProtected := sanitizeAnthropicTelemetryPrivacyHeaders(req, account, ctTelemetryPrivacyUserID)
-	s.recordAnthropicTelemetryPrivacyProtection(ctx, account, ctTelemetryPrivacyBodyProtected || ctTelemetryPrivacyHeaderProtected)
+	s.recordAnthropicTelemetryPrivacyProtection(ctx, account, req, "count_tokens", ctTelemetryPrivacyBodyProtected, ctTelemetryPrivacyHeaderProtected)
 
 	if c != nil && tokenType == "oauth" {
 		c.Set(claudeMimicDebugInfoKey, buildClaudeMimicDebugLine(req, body, account, tokenType, mimicClaudeCode))

@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { opsAPI, type OpsRuntimeLogConfig, type OpsSystemLog, type OpsSystemLogSinkHealth } from '@/api/admin/ops'
 import Pagination from '@/components/common/Pagination.vue'
 import Select from '@/components/common/Select.vue'
 import { useAppStore } from '@/stores'
 
 const appStore = useAppStore()
+const route = useRoute()
 
 const props = withDefaults(defineProps<{
   platformFilter?: string
@@ -56,6 +58,7 @@ const filters = reactive({
   model: '',
   q: ''
 })
+const routeLogFiltersActive = ref(false)
 
 const runtimeLevelOptions = [
   { value: 'debug', label: 'debug' },
@@ -79,6 +82,7 @@ const timeRangeOptions = [
   { value: '7d', label: '7d' },
   { value: '30d', label: '30d' }
 ]
+const timeRangeValues = new Set(timeRangeOptions.map(item => item.value))
 
 const filterLevelOptions = [
   { value: '', label: '全部' },
@@ -112,6 +116,20 @@ const getExtraString = (extra: Record<string, any> | undefined, key: string) => 
   return ''
 }
 
+const getExtraBoolLabel = (extra: Record<string, any> | undefined, key: string) => {
+  if (!extra) return ''
+  const v = extra[key]
+  if (v === true || v === 'true') return '是'
+  if (v === false || v === 'false') return '否'
+  return ''
+}
+
+const formatTelemetryPrivacyEndpoint = (endpoint: string) => {
+  if (endpoint === 'messages') return '消息创建'
+  if (endpoint === 'count_tokens') return '令牌计数'
+  return endpoint || '-'
+}
+
 const formatSystemLogDetail = (row: OpsSystemLog) => {
   const parts: string[] = []
   const msg = String(row.message || '').trim()
@@ -134,13 +152,40 @@ const formatSystemLogDetail = (row: OpsSystemLog) => {
   if (protocol) accessParts.push(`proto=${protocol}`)
   if (accessParts.length > 0) parts.push(accessParts.join(' '))
 
+  const isTelemetryPrivacyLog = extra.telemetry_privacy === true || extra.telemetry_privacy === 'true'
+  // 遥测隐私日志只展示处理策略和是否处理，不展示原始或派生后的遥测标识。
+  if (isTelemetryPrivacyLog) {
+    const privacyParts: string[] = []
+    privacyParts.push('遥测隐私=已处理')
+    privacyParts.push(`端点=${formatTelemetryPrivacyEndpoint(getExtraString(extra, 'endpoint'))}`)
+    privacyParts.push(`请求路径=${getExtraString(extra, 'path') || '-'}`)
+    privacyParts.push(`保护范围=${getExtraString(extra, 'privacy_scope') || '-'}`)
+    privacyParts.push(`请求正文处理=${getExtraBoolLabel(extra, 'body_protected') || '否'}`)
+    privacyParts.push(`请求头处理=${getExtraBoolLabel(extra, 'header_protected') || '否'}`)
+    privacyParts.push(`用户标识处理=${getExtraBoolLabel(extra, 'metadata_user_id_processed') || '否'}`)
+    privacyParts.push(`device_id策略=${getExtraString(extra, 'metadata_device_id_strategy') || '-'}`)
+    privacyParts.push(`account_uuid策略=${getExtraString(extra, 'metadata_account_uuid_strategy') || '-'}`)
+    privacyParts.push(`session_id策略=${getExtraString(extra, 'metadata_session_id_strategy') || '-'}`)
+    privacyParts.push(`header指纹策略=${getExtraString(extra, 'header_fingerprint_strategy') || '-'}`)
+    privacyParts.push(`User-Agent策略=${getExtraString(extra, 'user_agent_strategy') || '-'}`)
+    privacyParts.push(`X-Stainless策略=${getExtraString(extra, 'x_stainless_strategy') || '-'}`)
+    privacyParts.push(`X-App策略=${getExtraString(extra, 'x_app_strategy') || '-'}`)
+    privacyParts.push(`X-Claude-Code-Session-Id策略=${getExtraString(extra, 'x_claude_code_session_strategy') || '-'}`)
+    privacyParts.push(`x-client-request-id策略=${getExtraString(extra, 'x_client_request_id_strategy') || '-'}`)
+    privacyParts.push(`认证头改写=${getExtraBoolLabel(extra, 'authorization_protected') || '否'}`)
+    privacyParts.push(`测试功能头改写=${getExtraBoolLabel(extra, 'anthropic_beta_protected') || '否'}`)
+    privacyParts.push(`模型与消息正文改写=${getExtraBoolLabel(extra, 'model_or_messages_body_protected') || '否'}`)
+    privacyParts.push(`记录敏感原值=${getExtraBoolLabel(extra, 'sensitive_values_logged') || '否'}`)
+    parts.push(privacyParts.join(' '))
+  }
+
   const corrParts: string[] = []
   if (row.request_id) corrParts.push(`req=${row.request_id}`)
   if (row.client_request_id) corrParts.push(`client_req=${row.client_request_id}`)
   if (row.user_id != null) corrParts.push(`user=${row.user_id}`)
   if (row.account_id != null) corrParts.push(`acc=${row.account_id}`)
   if (row.platform) corrParts.push(`platform=${row.platform}`)
-  if (row.model) corrParts.push(`model=${row.model}`)
+  if (row.model && !isTelemetryPrivacyLog) corrParts.push(`model=${row.model}`)
   if (corrParts.length > 0) parts.push(corrParts.join(' '))
 
   const errors = getExtraString(extra, 'errors')
@@ -157,6 +202,55 @@ const toRFC3339 = (value: string) => {
   const d = new Date(value)
   if (Number.isNaN(d.getTime())) return undefined
   return d.toISOString()
+}
+
+const readRouteString = (key: string): string => {
+  const value = route.query[key]
+  if (typeof value === 'string') return value
+  if (Array.isArray(value) && typeof value[0] === 'string') return value[0]
+  return ''
+}
+
+// 账号列表的“日志”入口使用 system_log_* 查询参数深链到这里，避免覆盖运维看板自身的筛选状态。
+const applyRouteLogFilters = (): boolean => {
+  let changed = false
+  const applyString = (key: 'component' | 'account_id' | 'q', value: string) => {
+    if (filters[key] !== value) {
+      filters[key] = value
+      changed = true
+    }
+  }
+
+  const timeRange = readRouteString('system_log_time_range')
+  const accountID = readRouteString('system_log_account_id')
+  const component = readRouteString('system_log_component')
+  const query = readRouteString('system_log_q')
+  const hasRouteFilters = Boolean(timeRange || accountID || component || query)
+
+  if (!hasRouteFilters) {
+    if (!routeLogFiltersActive.value) return false
+    routeLogFiltersActive.value = false
+    if (filters.time_range !== '1h') {
+      filters.time_range = '1h'
+      changed = true
+    }
+    applyString('account_id', '')
+    applyString('component', '')
+    applyString('q', '')
+    return changed
+  }
+
+  routeLogFiltersActive.value = true
+  const nextTimeRange = timeRangeValues.has(timeRange) ? timeRange : '1h'
+  if (filters.time_range !== nextTimeRange) {
+    filters.time_range = nextTimeRange as typeof filters.time_range
+    changed = true
+  }
+
+  applyString('account_id', accountID)
+  applyString('component', component)
+  applyString('q', query)
+  return changed
 }
 
 const buildQuery = () => {
@@ -318,16 +412,23 @@ const resetFilters = () => {
 }
 
 watch(() => props.platformFilter, (v) => {
-  if (v && !filters.platform) {
-    filters.platform = v
-    page.value = 1
-    fetchLogs()
-  }
+  const nextPlatform = v || ''
+  if (filters.platform === nextPlatform) return
+  filters.platform = nextPlatform
+  page.value = 1
+  fetchLogs()
 })
 
 watch(() => props.refreshToken, () => {
   fetchLogs()
   fetchHealth()
+})
+
+watch(() => route.query, () => {
+  if (applyRouteLogFilters()) {
+    page.value = 1
+    fetchLogs()
+  }
 })
 
 const onPageChange = (next: number) => {
@@ -352,6 +453,7 @@ onMounted(async () => {
   if (props.platformFilter) {
     filters.platform = props.platformFilter
   }
+  applyRouteLogFilters()
   await Promise.all([fetchLogs(), fetchHealth(), loadRuntimeConfig()])
 })
 </script>

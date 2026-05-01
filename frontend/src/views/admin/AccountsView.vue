@@ -206,6 +206,15 @@
                 <Icon name="shield" size="xs" :stroke-width="2" />
                 {{ t('admin.accounts.telemetryPrivacyProtectedShort', { count: getTelemetryPrivacyProtectedCount(row) }) }}
               </span>
+              <a
+                v-if="isTelemetryPrivacyVisible(row)"
+                :href="getTelemetryPrivacyLogURL(row)"
+                class="inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-700 hover:bg-gray-200 dark:bg-dark-700 dark:text-gray-200 dark:hover:bg-dark-600"
+                :title="t('admin.accounts.telemetryPrivacyLogsTitle')"
+                @click.stop
+              >
+                {{ t('admin.accounts.telemetryPrivacyLogsShort') }}
+              </a>
               <span
                 v-if="getOpenAICompactLabel(row)"
                 :class="['inline-block rounded px-1.5 py-0.5 text-[10px] font-medium', getOpenAICompactClass(row)]"
@@ -1003,6 +1012,17 @@ function getTelemetryPrivacyProtectedCount(row: Account): number {
   const count = Number(row.telemetry_privacy_protected_count ?? 0)
   if (!Number.isFinite(count) || count < 0) return 0
   return Math.trunc(count)
+}
+
+function getTelemetryPrivacyLogURL(row: Account): string {
+  const params = new URLSearchParams({
+    platform: 'anthropic',
+    system_log_time_range: '24h',
+    system_log_component: 'service.gateway.audit.telemetry_privacy',
+    system_log_account_id: String(row.id),
+    system_log_q: '遥测隐私保护'
+  })
+  return `/admin/ops?${params.toString()}`
 }
 
 function getOpenAICompactState(row: any): 'supported' | 'unsupported' | 'unknown' | null {

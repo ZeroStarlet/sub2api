@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -71,6 +73,14 @@ func (s *telemetryPrivacyCounterRepoStub) IncrementExtraCounter(_ context.Contex
 	}
 	s.counts[id] += delta
 	return nil
+}
+
+type telemetryPrivacyLogSinkStub struct {
+	events []*logger.LogEvent
+}
+
+func (s *telemetryPrivacyLogSinkStub) WriteLogEvent(event *logger.LogEvent) {
+	s.events = append(s.events, event)
 }
 
 func TestAccount_IsTelemetryPrivacyEnabled(t *testing.T) {
@@ -322,6 +332,95 @@ func TestGatewayService_BuildUpstreamRequest_RecordsTelemetryPrivacyCount(t *tes
 
 	deferred.flushTelemetryPrivacyProtectionCounts()
 	require.Equal(t, int64(1), counterRepo.counts[account.ID])
+}
+
+func TestGatewayService_BuildUpstreamRequest_LogsTelemetryPrivacyWithoutRawIDs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	sink := &telemetryPrivacyLogSinkStub{}
+	logger.SetSink(sink)
+	t.Cleanup(func() {
+		logger.SetSink(nil)
+	})
+
+	account := telemetryPrivacyAnthropicAccount()
+	fp := telemetryPrivacyFingerprint()
+	cache := &telemetryPrivacyIdentityCacheStub{fingerprint: fp}
+	svc := &GatewayService{identityService: NewIdentityService(cache)}
+	c := telemetryPrivacyGinContext()
+
+	req, err := svc.buildUpstreamRequest(
+		context.Background(),
+		c,
+		account,
+		telemetryPrivacyRequestBody("1111111111111111111111111111111111111111111111111111111111111111", "550e8400-e29b-41d4-a716-446655440000", "123e4567-e89b-12d3-a456-426614174000"),
+		"oauth-token",
+		"oauth",
+		"claude-3-7-sonnet-20250219",
+		false,
+		false,
+	)
+	require.NoError(t, err)
+	require.Len(t, sink.events, 1)
+
+	event := sink.events[0]
+	require.Equal(t, "service.gateway.audit.telemetry_privacy", event.Component)
+	require.Equal(t, "遥测隐私保护已处理", event.Message)
+	require.Equal(t, "messages", event.Fields["endpoint"])
+	require.Equal(t, account.ID, event.Fields["account_id"])
+	require.Equal(t, true, event.Fields["body_protected"])
+	require.Equal(t, true, event.Fields["header_protected"])
+	require.Equal(t, true, event.Fields["metadata_user_id_processed"])
+	require.Equal(t, "按账号编号派生稳定哈希", event.Fields["metadata_device_id_strategy"])
+	require.Equal(t, "按账号编号派生单一稳定会话", event.Fields["metadata_session_id_strategy"])
+	require.Equal(t, "强制使用官方客户端默认头指纹", event.Fields["header_fingerprint_strategy"])
+	require.Equal(t, false, event.Fields["sensitive_values_logged"])
+	_, hasModel := event.Fields["model"]
+	require.False(t, hasModel)
+
+	raw, err := json.Marshal(event.Fields)
+	require.NoError(t, err)
+	text := string(raw)
+	require.NotContains(t, text, "claude-3-7-sonnet-20250219")
+	require.NotContains(t, text, "oauth-token")
+	require.NotContains(t, text, "Bearer oauth-token")
+	require.NotContains(t, text, "1111111111111111111111111111111111111111111111111111111111111111")
+	require.NotContains(t, text, "550e8400-e29b-41d4-a716-446655440000")
+	require.NotContains(t, text, "123e4567-e89b-12d3-a456-426614174000")
+	require.NotContains(t, text, "client-request-id-real")
+	require.NotContains(t, text, getHeaderRaw(req.Header, "x-client-request-id"))
+	require.NotContains(t, text, anthropicTelemetryPrivacyDeviceID(account))
+	require.NotContains(t, text, anthropicTelemetryPrivacySessionID(account))
+
+	countReq, err := svc.buildCountTokensRequest(
+		context.Background(),
+		telemetryPrivacyGinContext(),
+		account,
+		telemetryPrivacyRequestBody("2222222222222222222222222222222222222222222222222222222222222222", "550e8400-e29b-41d4-a716-446655440000", "223e4567-e89b-12d3-a456-426614174000"),
+		"oauth-token",
+		"oauth",
+		"claude-3-7-sonnet-20250219",
+		false,
+	)
+	require.NoError(t, err)
+	require.Len(t, sink.events, 2)
+	countEvent := sink.events[1]
+	require.Equal(t, "count_tokens", countEvent.Fields["endpoint"])
+	_, hasCountModel := countEvent.Fields["model"]
+	require.False(t, hasCountModel)
+
+	countRaw, err := json.Marshal(countEvent.Fields)
+	require.NoError(t, err)
+	countText := string(countRaw)
+	require.NotContains(t, countText, "claude-3-7-sonnet-20250219")
+	require.NotContains(t, countText, "oauth-token")
+	require.NotContains(t, countText, "Bearer oauth-token")
+	require.NotContains(t, countText, "2222222222222222222222222222222222222222222222222222222222222222")
+	require.NotContains(t, countText, "550e8400-e29b-41d4-a716-446655440000")
+	require.NotContains(t, countText, "223e4567-e89b-12d3-a456-426614174000")
+	require.NotContains(t, countText, "client-request-id-real")
+	require.NotContains(t, countText, getHeaderRaw(countReq.Header, "x-client-request-id"))
+	require.NotContains(t, countText, anthropicTelemetryPrivacyDeviceID(account))
+	require.NotContains(t, countText, anthropicTelemetryPrivacySessionID(account))
 }
 
 func TestGatewayService_BuildUpstreamRequest_TelemetryPrivacyOverridesSessionIDMasking(t *testing.T) {

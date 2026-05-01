@@ -2807,6 +2807,8 @@ export default {
       failedToClearRateLimit: 'Failed to clear rate limit',
       telemetryPrivacyProtectedShort: '保护 {count}',
       telemetryPrivacyProtectedCount: '遥测隐私已保护 {count} 次',
+      telemetryPrivacyLogsShort: '日志',
+      telemetryPrivacyLogsTitle: '查看遥测隐私保护处理日志',
       deleteConfirm: "Are you sure you want to delete '{name}'? This action cannot be undone.",
       // Create/Edit Account Modal
       platform: 'Platform',
