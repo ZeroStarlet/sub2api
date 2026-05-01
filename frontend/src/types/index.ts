@@ -829,6 +829,11 @@ export interface Account {
   // 启用后将在15分钟内固定 metadata.user_id 中的 session ID
   session_id_masking_enabled?: boolean | null
 
+  // 遥测隐私保护（仅 Anthropic OAuth/SetupToken 账号有效）
+  // 启用后向上游发送账号级单一匿名遥测身份，不透传真实客户端设备、账号 UUID 和会话 ID
+  telemetry_privacy_enabled?: boolean | null
+  telemetry_privacy_protected_count?: number | null
+
   // 缓存 TTL 强制替换（仅 Anthropic OAuth/SetupToken 账号有效）
   cache_ttl_override_enabled?: boolean | null
   cache_ttl_override_target?: string | null

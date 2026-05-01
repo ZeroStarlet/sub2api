@@ -16,6 +16,11 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
+// AccountExtraTelemetryPrivacyProtectedCount 记录账号级遥测隐私保护累计次数。
+// 该值只保存聚合计数，不保存客户端 device_id、session_id、请求 ID 或任何用户输入内容。
+// 当前仅 Anthropic OAuth/SetupToken 账号会写入，用于管理端直观看到保护功能实际生效次数。
+const AccountExtraTelemetryPrivacyProtectedCount = "telemetry_privacy_protected_count"
+
 type Account struct {
 	ID          int64
 	Name        string
@@ -1467,6 +1472,44 @@ func (a *Account) IsSessionIDMaskingEnabled() bool {
 	return false
 }
 
+// IsTelemetryPrivacyEnabled 检查是否启用 Anthropic 遥测隐私保护。
+// 该开关仅对 Anthropic OAuth/SetupToken 账号生效；API Key、Bedrock、
+// Vertex Service Account 以及其他平台账号都会返回 false，避免误改非目标链路。
+// 开启后，网关只处理向 Anthropic 上游发送的遥测身份字段：
+// metadata.user_id 中的 device_id、account_uuid、session_id 会被替换为
+// 账号级匿名值，X-Claude-Code-Session-Id 与 x-client-request-id 会被改写为
+// 不来自客户端的值。认证令牌、模型名、消息正文和业务计费字段不会在此方法中处理。
+// Extra 字段缺失、字段类型不是 bool 或值为 false 时均视为未开启，保持旧账号兼容。
+func (a *Account) IsTelemetryPrivacyEnabled() bool {
+	if a == nil || !a.IsAnthropicOAuthOrSetupToken() {
+		return false
+	}
+	if a.Extra == nil {
+		return false
+	}
+	if v, ok := a.Extra["telemetry_privacy_enabled"]; ok {
+		if enabled, ok := v.(bool); ok {
+			return enabled
+		}
+	}
+	return false
+}
+
+// GetTelemetryPrivacyProtectedCount 获取账号级遥测隐私保护累计次数。
+// 该计数来自网关真实转发路径：只有请求经过 metadata/header 匿名化处理后才会累加。
+// 返回值仅用于展示保护效果；字段缺失、类型异常、负数或非 Anthropic OAuth/SetupToken
+// 账号均返回 0，避免旧数据或手工写入的异常值影响管理端判断。
+func (a *Account) GetTelemetryPrivacyProtectedCount() int64 {
+	if a == nil || !a.IsAnthropicOAuthOrSetupToken() || a.Extra == nil {
+		return 0
+	}
+	count := parseExtraInt64(a.Extra[AccountExtraTelemetryPrivacyProtectedCount])
+	if count < 0 {
+		return 0
+	}
+	return count
+}
+
 // IsCustomBaseURLEnabled 检查是否启用自定义 base URL 中继转发
 // 仅适用于 Anthropic OAuth/SetupToken 类型账号
 func (a *Account) IsCustomBaseURLEnabled() bool {
@@ -2194,6 +2237,28 @@ func parseExtraInt(value any) int {
 		}
 	case string:
 		if i, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return i
+		}
+	}
+	return 0
+}
+
+func parseExtraInt64(value any) int64 {
+	switch v := value.(type) {
+	case int:
+		return int64(v)
+	case int64:
+		return v
+	case int32:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return i
+		}
+	case string:
+		if i, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
 			return i
 		}
 	}

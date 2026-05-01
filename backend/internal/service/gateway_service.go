@@ -1323,6 +1323,158 @@ func hashBodyForSessionSeed(body []byte) string {
 	return fmt.Sprintf("%x", sum[:16])
 }
 
+// sanitizeAnthropicTelemetryPrivacyBody 在账号级遥测隐私开关开启时改写 body 中的
+// metadata.user_id。Claude Code 会把 device_id、account_uuid、session_id 放在
+// 该字段里，Anthropic 上游可据此关联本机、OAuth 账号和本地会话；这里保留字段格式，
+// 但把值替换成 sub2api 生成的账号级匿名标识，避免泄露真实客户端身份。
+//
+// 处理边界：
+//   - 仅 Anthropic OAuth/SetupToken 且 extra.telemetry_privacy_enabled=true 时生效。
+//   - metadata.user_id 缺失、不是字符串或格式不符合 Claude Code 约定时不改 body，
+//     交由原有兼容链路继续处理，避免破坏非标准客户端请求。
+//   - account_uuid 始终写为空字符串；它对认证无影响，但会暴露真实 Anthropic 账号。
+//   - device_id 始终使用账号 ID 派生的确定性 64 位十六进制值；刻意不复用
+//     IdentityService 的 ClientID，因为指纹缓存不可写时它可能每次请求随机生成，
+//     导致上游看到同一账号出现大量不同设备。
+//   - session_id 使用账号 ID 派生的单一确定性 UUID；同一个上游账号不会因为下游
+//     用户或本地 Claude Code 会话不同而扩散成大量上游身份，降低账号风控风险。
+func sanitizeAnthropicTelemetryPrivacyBody(body []byte, account *Account) ([]byte, *ParsedUserID, bool) {
+	if !account.IsTelemetryPrivacyEnabled() {
+		return body, nil, false
+	}
+	userIDResult := gjson.GetBytes(body, "metadata.user_id")
+	if !userIDResult.Exists() || userIDResult.Type != gjson.String {
+		return body, nil, false
+	}
+	parsed := ParseMetadataUserID(userIDResult.String())
+	if parsed == nil {
+		return body, nil, false
+	}
+
+	deviceID := anthropicTelemetryPrivacyDeviceID(account)
+	sessionID := anthropicTelemetryPrivacySessionID(account)
+	version := claude.CLICurrentVersion
+	newUserID := FormatMetadataUserID(deviceID, "", sessionID, version)
+	if newUserID == userIDResult.String() {
+		return body, parsed, true
+	}
+	newBody, err := sjson.SetBytes(body, "metadata.user_id", newUserID)
+	if err != nil {
+		return body, nil, false
+	}
+	return newBody, ParseMetadataUserID(newUserID), true
+}
+
+// anthropicTelemetryPrivacyDeviceID 返回不会暴露客户端本机身份的 device_id。
+// 该值只由 sub2api 账号 ID 派生，不读取请求头、缓存指纹、客户端 device_id 或会话信息；
+// 这样 Redis/指纹缓存异常时也不会把同一上游账号扩散成多个上游设备。
+func anthropicTelemetryPrivacyDeviceID(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("anthropic_telemetry_privacy_device:%d", account.ID)))
+	return fmt.Sprintf("%x", sum[:])
+}
+
+// anthropicTelemetryPrivacySessionID 返回账号级单一匿名 session_id。
+// 这里刻意不混入客户端原始 session_id、IP、User-Agent 或请求正文：
+// 这些输入会把多个下游用户映射成多个上游会话，反而增加账号被识别为共享使用的风险。
+func anthropicTelemetryPrivacySessionID(account *Account) string {
+	if account == nil {
+		return generateUUIDFromSeed("")
+	}
+	return generateUUIDFromSeed(fmt.Sprintf("anthropic_telemetry_privacy_account_session:%d", account.ID))
+}
+
+// sanitizeAnthropicTelemetryPrivacyHeaders 在所有默认头、伪装头和 beta 头处理完成后调用。
+// 它会强制覆盖 Claude Code header 指纹，确保全局指纹统一关闭时也不会透传下游
+// User-Agent / x-stainless-* 差异；同时不触碰 authorization、anthropic-beta、模型、
+// 消息正文等业务字段，避免破坏认证、beta 策略或正常请求语义。
+//
+// X-Claude-Code-Session-Id 与 metadata.user_id.session_id 表达同一个本地会话，
+// 因此优先同步为已匿名化的 session_id；当 body 中没有可解析 user_id 时，
+// 仍使用账号级匿名 session_id，避免异常请求把真实会话头直传上游。
+// x-client-request-id 是 Claude Code 每请求生成的关联 ID，可能进入上游日志；
+// 开启隐私后替换为 sub2api 新生成的 UUID，既保留真实 CLI 形态，又不复用客户端值。
+func sanitizeAnthropicTelemetryPrivacyHeaders(req *http.Request, account *Account, userID *ParsedUserID) bool {
+	if req == nil || !account.IsTelemetryPrivacyEnabled() {
+		return false
+	}
+	protected := applyAnthropicTelemetryPrivacyHeaderFingerprint(req)
+	if sessionHeader := getHeaderRaw(req.Header, "X-Claude-Code-Session-Id"); sessionHeader != "" {
+		sessionID := ""
+		if userID != nil {
+			sessionID = userID.SessionID
+		}
+		if sessionID == "" {
+			sessionID = anthropicTelemetryPrivacySessionID(account)
+		}
+		setHeaderRaw(req.Header, "X-Claude-Code-Session-Id", sessionID)
+		protected = true
+	}
+	if requestID := getHeaderRaw(req.Header, "x-client-request-id"); requestID != "" {
+		setHeaderRaw(req.Header, "x-client-request-id", uuid.NewString())
+		protected = true
+	}
+	return protected
+}
+
+// applyAnthropicTelemetryPrivacyHeaderFingerprint 强制使用稳定的 Claude Code 标准 header 指纹。
+// 这里复用 claude.DefaultHeaders，而不是下游请求或 IdentityService 缓存值：
+//   - 下游请求头会暴露真实客户端版本、系统、架构和运行时，多个用户会呈现多个指纹；
+//   - IdentityService 首次建指纹时会从下游请求头取值，缓存不可写时还可能重复随机生成；
+//   - 默认 Claude Code 指纹与当前伪装策略一致，且不会记录或传播任何个人身份信息。
+//
+// 返回值表示请求头是否实际被改写，用于保护次数统计。该方法刻意不改写
+// authorization、anthropic-beta、content-type 和 X-Claude-Code-Session-Id；这些字段由
+// 认证、beta 策略、正文类型和会话匿名化逻辑分别负责。
+func applyAnthropicTelemetryPrivacyHeaderFingerprint(req *http.Request) bool {
+	protected := false
+	for key, value := range claude.DefaultHeaders {
+		if value == "" {
+			continue
+		}
+		if getHeaderRaw(req.Header, key) != value {
+			protected = true
+		}
+		setHeaderRaw(req.Header, resolveWireCasing(key), value)
+	}
+	if getHeaderRaw(req.Header, "Accept") != "application/json" {
+		protected = true
+	}
+	setHeaderRaw(req.Header, "Accept", "application/json")
+	return protected
+}
+
+// recordAnthropicTelemetryPrivacyProtection 记录一次账号级遥测隐私保护。
+// 这里的“保护一次”指某个 Anthropic OAuth/SetupToken 上游请求实际执行过
+// metadata.user_id 或遥测 header 的匿名化。计数只按账号累加，不包含下游用户、
+// 原始会话、请求 ID 或正文内容；当 DeferredService 可用时走延迟批量写入，
+// 否则仅在仓储实现支持原子计数接口时同步写入，失败只记录日志不影响转发。
+func (s *GatewayService) recordAnthropicTelemetryPrivacyProtection(ctx context.Context, account *Account, protected bool) {
+	if !protected || account == nil || !account.IsTelemetryPrivacyEnabled() || account.ID <= 0 {
+		return
+	}
+	if s != nil && s.deferredService != nil {
+		if _, ok := s.deferredService.accountRepo.(accountExtraCounterRepository); ok {
+			s.deferredService.ScheduleTelemetryPrivacyProtection(account.ID)
+			return
+		}
+	}
+	if s == nil || s.accountRepo == nil {
+		return
+	}
+	repo, ok := s.accountRepo.(accountExtraCounterRepository)
+	if !ok || repo == nil {
+		return
+	}
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := repo.IncrementExtraCounter(writeCtx, account.ID, AccountExtraTelemetryPrivacyProtectedCount, 1); err != nil {
+		logger.LegacyPrintf("service.gateway", "警告：账号 %d 的遥测隐私保护计数写入失败：%v", account.ID, err)
+	}
+}
+
 // GenerateSessionUUID creates a deterministic UUID4 from a seed string.
 func GenerateSessionUUID(seed string) string {
 	return generateSessionUUID(seed)
@@ -5992,9 +6144,12 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			}
 		}
 	}
+	body, telemetryPrivacyUserID, telemetryPrivacyBodyProtected := sanitizeAnthropicTelemetryPrivacyBody(body, account)
 
 	// 同步 billing header cc_version 与实际发送的 User-Agent 版本
-	if fingerprint != nil {
+	if account.IsTelemetryPrivacyEnabled() {
+		body = syncBillingHeaderVersion(body, claude.DefaultHeaders["User-Agent"])
+	} else if fingerprint != nil {
 		body = syncBillingHeaderVersion(body, fingerprint.UserAgent)
 	}
 	// CCH 签名：将 cch=00000 占位符替换为 xxHash64 签名（需在所有 body 修改之后）
@@ -6097,6 +6252,8 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			}
 		}
 	}
+	telemetryPrivacyHeaderProtected := sanitizeAnthropicTelemetryPrivacyHeaders(req, account, telemetryPrivacyUserID)
+	s.recordAnthropicTelemetryPrivacyProtection(ctx, account, telemetryPrivacyBodyProtected || telemetryPrivacyHeaderProtected)
 
 	// === DEBUG: 打印上游转发请求（headers + body 摘要），与 CLIENT_ORIGINAL 对比 ===
 	s.debugLogGatewaySnapshot("UPSTREAM_FORWARD", req.Header, body, map[string]string{
@@ -9172,9 +9329,12 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 			}
 		}
 	}
+	body, ctTelemetryPrivacyUserID, ctTelemetryPrivacyBodyProtected := sanitizeAnthropicTelemetryPrivacyBody(body, account)
 
 	// 同步 billing header cc_version 与实际发送的 User-Agent 版本
-	if ctFingerprint != nil && ctEnableFP {
+	if account.IsTelemetryPrivacyEnabled() {
+		body = syncBillingHeaderVersion(body, claude.DefaultHeaders["User-Agent"])
+	} else if ctFingerprint != nil && ctEnableFP {
 		body = syncBillingHeaderVersion(body, ctFingerprint.UserAgent)
 	}
 	if ctEnableCCH {
@@ -9265,6 +9425,8 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 			}
 		}
 	}
+	ctTelemetryPrivacyHeaderProtected := sanitizeAnthropicTelemetryPrivacyHeaders(req, account, ctTelemetryPrivacyUserID)
+	s.recordAnthropicTelemetryPrivacyProtection(ctx, account, ctTelemetryPrivacyBodyProtected || ctTelemetryPrivacyHeaderProtected)
 
 	if c != nil && tokenType == "oauth" {
 		c.Set(claudeMimicDebugInfoKey, buildClaudeMimicDebugLine(req, body, account, tokenType, mimicClaudeCode))

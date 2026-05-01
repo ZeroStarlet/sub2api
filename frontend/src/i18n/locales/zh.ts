@@ -2954,6 +2954,8 @@ export default {
       failedToSave: '保存账号失败',
       failedToDelete: '删除账号失败',
       failedToRefresh: '刷新 Cookie 失败',
+      telemetryPrivacyProtectedShort: '保护 {count}',
+      telemetryPrivacyProtectedCount: '遥测隐私已保护 {count} 次',
       // Create/Edit Account Modal
       platform: '平台',
       accountName: '账号名称',
@@ -3146,6 +3148,10 @@ export default {
         sessionIdMasking: {
           label: '会话 ID 伪装',
           hint: '启用后将在 15 分钟内固定 metadata.user_id 中的 session ID，使上游认为请求来自同一会话'
+        },
+        telemetryPrivacy: {
+          label: '遥测隐私保护',
+          hint: '启用后向上游发送账号级单一匿名遥测身份，不透传真实客户端设备、账号 UUID 和会话 ID，避免被识别为大量用户共享'
         },
         cacheTTLOverride: {
           label: '缓存 TTL 强制替换',

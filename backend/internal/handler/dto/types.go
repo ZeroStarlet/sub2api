@@ -206,6 +206,13 @@ type Account struct {
 	// 从 extra 字段提取，方便前端显示和编辑
 	EnableSessionIDMasking *bool `json:"session_id_masking_enabled,omitempty"`
 
+	// 遥测隐私保护（仅 Anthropic OAuth/SetupToken 账号有效）
+	// 启用后向 Anthropic 上游转发前会改写 Claude Code 遥测身份字段，
+	// 使用账号级单一匿名 device/session，避免透传真实客户端设备、账号 UUID 和会话 ID
+	TelemetryPrivacyEnabled *bool `json:"telemetry_privacy_enabled,omitempty"`
+	// 遥测隐私保护累计次数（仅保存聚合计数，不保存任何客户端身份信息）
+	TelemetryPrivacyProtectedCount int64 `json:"telemetry_privacy_protected_count,omitempty"`
+
 	// 缓存 TTL 强制替换（仅 Anthropic OAuth/SetupToken 账号有效）
 	// 启用后将所有 cache creation tokens 归入指定的 TTL 类型计费
 	CacheTTLOverrideEnabled *bool   `json:"cache_ttl_override_enabled,omitempty"`

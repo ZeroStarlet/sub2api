@@ -199,6 +199,14 @@
             <div class="flex flex-wrap items-center gap-1">
               <PlatformTypeBadge :platform="row.platform" :type="row.type" :plan-type="row.credentials?.plan_type" :privacy-mode="row.extra?.privacy_mode" :subscription-expires-at="row.credentials?.subscription_expires_at" />
               <span
+                v-if="isTelemetryPrivacyVisible(row)"
+                class="inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/35 dark:text-emerald-300"
+                :title="t('admin.accounts.telemetryPrivacyProtectedCount', { count: getTelemetryPrivacyProtectedCount(row) })"
+              >
+                <Icon name="shield" size="xs" :stroke-width="2" />
+                {{ t('admin.accounts.telemetryPrivacyProtectedShort', { count: getTelemetryPrivacyProtectedCount(row) }) }}
+              </span>
+              <span
                 v-if="getOpenAICompactLabel(row)"
                 :class="['inline-block rounded px-1.5 py-0.5 text-[10px] font-medium', getOpenAICompactClass(row)]"
                 :title="getOpenAICompactTitle(row)"
@@ -838,6 +846,8 @@ const shouldReplaceAutoRefreshRow = (current: Account, next: Account) => {
     current.rate_limit_reset_at !== next.rate_limit_reset_at ||
     current.overload_until !== next.overload_until ||
     current.temp_unschedulable_until !== next.temp_unschedulable_until ||
+    current.telemetry_privacy_enabled !== next.telemetry_privacy_enabled ||
+    current.telemetry_privacy_protected_count !== next.telemetry_privacy_protected_count ||
     buildOpenAIUsageRefreshKey(current) !== buildOpenAIUsageRefreshKey(next)
   )
 }
@@ -981,6 +991,18 @@ function getAntigravityTierLabel(row: any): string | null {
     case 'g1-ultra-tier': return t('admin.accounts.tier.ultra')
     default: return null
   }
+}
+
+function isTelemetryPrivacyVisible(row: Account): boolean {
+  return row.platform === 'anthropic' &&
+    (row.type === 'oauth' || row.type === 'setup-token') &&
+    row.telemetry_privacy_enabled === true
+}
+
+function getTelemetryPrivacyProtectedCount(row: Account): number {
+  const count = Number(row.telemetry_privacy_protected_count ?? 0)
+  if (!Number.isFinite(count) || count < 0) return 0
+  return Math.trunc(count)
 }
 
 function getOpenAICompactState(row: any): 'supported' | 'unsupported' | 'unknown' | null {

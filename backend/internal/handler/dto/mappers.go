@@ -266,6 +266,12 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 			enabled := true
 			out.EnableSessionIDMasking = &enabled
 		}
+		// 遥测隐私保护开关
+		if a.IsTelemetryPrivacyEnabled() {
+			enabled := true
+			out.TelemetryPrivacyEnabled = &enabled
+			out.TelemetryPrivacyProtectedCount = a.GetTelemetryPrivacyProtectedCount()
+		}
 		// 缓存 TTL 强制替换
 		if a.IsCacheTTLOverrideEnabled() {
 			enabled := true

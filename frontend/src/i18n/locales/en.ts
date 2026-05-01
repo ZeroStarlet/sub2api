@@ -2805,6 +2805,8 @@ export default {
       failedToRefresh: 'Failed to refresh token',
       failedToDelete: 'Failed to delete account',
       failedToClearRateLimit: 'Failed to clear rate limit',
+      telemetryPrivacyProtectedShort: '保护 {count}',
+      telemetryPrivacyProtectedCount: '遥测隐私已保护 {count} 次',
       deleteConfirm: "Are you sure you want to delete '{name}'? This action cannot be undone.",
       // Create/Edit Account Modal
       platform: 'Platform',
@@ -3005,6 +3007,10 @@ export default {
         sessionIdMasking: {
           label: 'Session ID Masking',
           hint: 'When enabled, fixes the session ID in metadata.user_id for 15 minutes, making upstream think requests come from the same session'
+        },
+        telemetryPrivacy: {
+          label: '遥测隐私保护',
+          hint: '启用后向上游发送账号级单一匿名遥测身份，不透传真实客户端设备、账号 UUID 和会话 ID，避免被识别为大量用户共享'
         },
         cacheTTLOverride: {
           label: 'Cache TTL Override',

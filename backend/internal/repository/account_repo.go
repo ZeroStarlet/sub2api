@@ -60,8 +60,9 @@ var schedulerNeutralExtraKeyPrefixes = []string{
 }
 
 var schedulerNeutralExtraKeys = map[string]struct{}{
-	"codex_usage_updated_at":     {},
-	"session_window_utilization": {},
+	"codex_usage_updated_at":                           {},
+	"session_window_utilization":                       {},
+	service.AccountExtraTelemetryPrivacyProtectedCount: {},
 }
 
 // NewAccountRepository 创建账户仓储实例。
@@ -1330,6 +1331,47 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		// 让 sticky session / GetAccount 命中缓存时也能读到最新数据，
 		// 同时避免缓存局部 patch 覆盖掉并发写入的其它账号字段。
 		r.syncSchedulerAccountSnapshot(ctx, id)
+	}
+	return nil
+}
+
+// IncrementExtraCounter 原子递增账号 extra 中的整数计数字段。
+// 当前用于遥测隐私保护次数统计；该方法只接受调用方传入的聚合计数字段名和增量，
+// 不读取或写入任何请求级身份信息。SQL 使用 jsonb_set 在数据库侧完成累加，
+// 避免并发请求读-改-写覆盖彼此的计数。
+func (r *accountRepository) IncrementExtraCounter(ctx context.Context, id int64, key string, delta int64) error {
+	key = strings.TrimSpace(key)
+	if key == "" || delta <= 0 {
+		return nil
+	}
+
+	client := clientFromContext(ctx, r.client)
+	result, err := client.ExecContext(
+		ctx,
+		`UPDATE accounts
+SET extra = jsonb_set(
+	COALESCE(extra, '{}'::jsonb),
+	ARRAY[$1],
+	to_jsonb((
+		CASE
+			WHEN COALESCE(extra->>$1, '') ~ '^-?[0-9]+$' THEN (extra->>$1)::bigint
+			ELSE 0
+		END + $2
+	)::bigint),
+	true
+), updated_at = NOW()
+WHERE id = $3 AND deleted_at IS NULL`,
+		key, delta, id,
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrAccountNotFound
 	}
 	return nil
 }
