@@ -371,6 +371,12 @@ func NewSettingService(settingRepo SettingRepository, cfg *config.Config) *Setti
 	}
 }
 
+// SettingRepo returns the underlying SettingRepository for direct key-value operations
+// (e.g., telemetry privacy HMAC key management).
+func (s *SettingService) SettingRepo() SettingRepository {
+	return s.settingRepo
+}
+
 // SetDefaultSubscriptionGroupReader injects an optional group reader for default subscription validation.
 func (s *SettingService) SetDefaultSubscriptionGroupReader(reader DefaultSubscriptionGroupReader) {
 	s.defaultSubGroupReader = reader
@@ -2257,6 +2263,9 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	}
 	result.EnableMetadataPassthrough = settings[SettingKeyEnableMetadataPassthrough] == "true"
 	result.EnableCCHSigning = settings[SettingKeyEnableCCHSigning] == "true"
+
+	// Telemetry privacy HMAC key
+	result.TelemetryPrivacyHMACKeyConfigured = settings[SettingKeyTelemetryPrivacyHMACKey] != ""
 	result.EnableAnthropicCacheTTL1hInjection = settings[SettingKeyEnableAnthropicCacheTTL1hInjection] == "true"
 
 	// Web search emulation: quick enabled check from the JSON config

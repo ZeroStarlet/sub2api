@@ -384,10 +384,15 @@ func ProvideBackupService(
 }
 
 // ProvideSettingService wires SettingService with group reader and proxy repo.
+// Also initializes the telemetry privacy HMAC key from the database setting.
 func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupRepository, proxyRepo ProxyRepository, cfg *config.Config) *SettingService {
 	svc := NewSettingService(settingRepo, cfg)
 	svc.SetDefaultSubscriptionGroupReader(groupRepo)
 	svc.SetProxyRepository(proxyRepo)
+
+	// 从数据库加载遥测隐私 HMAC 密钥（环境变量 → DB → 默认）
+	InitPrivacyHMACKeyFromDB(context.Background(), settingRepo)
+
 	return svc
 }
 

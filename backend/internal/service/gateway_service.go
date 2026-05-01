@@ -6016,7 +6016,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 
 	// Telemetry privacy: strip identifying information from request body.
 	if account.IsOAuth() && IsAnthropicTelemetryPrivacyEnabled(account) {
-		body = RewriteTelemetryUserID(body)
+		body = RewriteTelemetryUserID(body, account.ID)
 		body = StripTelemetryBillingHeader(body)
 		body = StripTelemetrySystemReminders(body)
 		body = StripTelemetryEnvInfo(body)
@@ -9212,7 +9212,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 
 	// Telemetry privacy: strip identifying information from request body.
 	if account.IsOAuth() && IsAnthropicTelemetryPrivacyEnabled(account) {
-		body = RewriteTelemetryUserID(body)
+		body = RewriteTelemetryUserID(body, account.ID)
 		body = StripTelemetryBillingHeader(body)
 		body = StripTelemetrySystemReminders(body)
 		body = StripTelemetryEnvInfo(body)

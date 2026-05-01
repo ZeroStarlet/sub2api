@@ -2646,7 +2646,7 @@ export default {
       schedulableEnabled: '调度已开启',
       schedulableDisabled: '调度已关闭',
       telemetryPrivacyStatus: '已保护 {count} 次',
-      telemetryPrivacyTooltip: '遥测丢弃: {dropped} 次 — 请求脱敏: {stripped} 次',
+      telemetryPrivacyTooltip: '遥测丢弃: {dropped} 次 — 事件日志: {log} 次 — 请求脱敏: {stripped} 次 — Datadog 直连需客户端屏蔽',
       failedToToggleSchedulable: '切换调度状态失败',
       groupCountTotal: '共 {count} 个分组',
       columns: {
@@ -3151,7 +3151,7 @@ export default {
         },
         telemetryPrivacy: {
           label: '遥测隐私',
-          hint: '从上游请求中剥离识别头和系统提示元数据，拦截事件日志、Datadog 遥测及上游代理请求。'
+          hint: '从上游请求中剥离识别头和系统提示元数据，拦截事件日志及 Claude Code 内部遥测。注意：Datadog 遥测直连 datadoghq.com 不经代理，需在客户端设置 DISABLE_TELEMETRY=1 或在网络层屏蔽 *.datadoghq.com。'
         },
         cacheTTLOverride: {
           label: '缓存 TTL 强制替换',
@@ -5186,6 +5186,16 @@ export default {
         cchSigningHint: '对转发请求的 billing header 进行 CCH 哈希签名。关闭时保留原始占位符。',
         anthropicCacheTTL1hInjection: 'Anthropic 缓存 TTL 注入',
         anthropicCacheTTL1hInjectionHint: '开启后，对 Anthropic OAuth/Setup Token 请求体中已有的 ephemeral 缓存块强制写入 1h；响应 usage 默认按 5m 回写计费，账号级 TTL 计费设置优先。',
+      },
+      telemetryPrivacyHMACKey: {
+        title: '遥测隐私 HMAC 密钥',
+        description: '配置遥测隐私功能中用于派生匿名设备标识的 HMAC 密钥。修改后需重启服务生效。',
+        label: 'HMAC 密钥（64 位十六进制）',
+        hint: '用于生成每账号唯一且一致的匿名 device_id/UUID。不设置则使用默认密钥（不推荐用于生产环境）。',
+        placeholder: '输入 64 位十六进制密钥...',
+        configured: '密钥已配置',
+        generate: '生成随机密钥',
+        restartNote: '⚠ 修改密钥后需要重启服务才能生效。同一密钥下同一账号的派生标识保持一致。',
       },
       webSearchEmulation: {
         title: 'Web Search 模拟',

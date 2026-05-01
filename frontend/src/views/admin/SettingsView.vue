@@ -3084,6 +3084,49 @@
               </div>
             </div>
           </div>
+          <!-- Telemetry Privacy HMAC Key -->
+          <div class="card">
+            <div
+              class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
+            >
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t("admin.settings.telemetryPrivacyHMACKey.title") }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t("admin.settings.telemetryPrivacyHMACKey.description") }}
+              </p>
+            </div>
+            <div class="space-y-5 p-6">
+              <div>
+                <label
+                  class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                >
+                  {{ t("admin.settings.telemetryPrivacyHMACKey.label") }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t("admin.settings.telemetryPrivacyHMACKey.hint") }}
+                </p>
+                <div class="mt-2 flex items-center gap-3">
+                  <input
+                    v-model="telemetryPrivacyHMACKeyInput"
+                    type="text"
+                    :placeholder="form.telemetry_privacy_hmac_key_configured ? t('admin.settings.telemetryPrivacyHMACKey.configured') : t('admin.settings.telemetryPrivacyHMACKey.placeholder')"
+                    class="block w-full max-w-xl rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-dark-600 dark:bg-dark-800 dark:text-white dark:placeholder-gray-500"
+                  />
+                  <button
+                    type="button"
+                    class="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    @click="generateTelemetryPrivacyHMACKey"
+                  >
+                    {{ t("admin.settings.telemetryPrivacyHMACKey.generate") }}
+                  </button>
+                </div>
+                <p class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                   {{ t("admin.settings.telemetryPrivacyHMACKey.restartNote") }}
+                </p>
+              </div>
+            </div>
+          </div>
           <!-- Web Search Emulation -->
           <div class="card">
             <div
@@ -5544,6 +5587,17 @@ function localText(zh: string, en: string): string {
   return locale.value.startsWith("zh") ? zh : en;
 }
 
+// 遥测隐私 HMAC 密钥生成：64 位随机十六进制字符串
+function generateTelemetryPrivacyHMACKey() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const hex = Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  telemetryPrivacyHMACKeyInput.value = hex;
+  form.telemetry_privacy_hmac_key = hex;
+}
+
 const paymentGuideHref = computed(() =>
   locale.value.startsWith("zh")
     ? "https://github.com/Wei-Shaw/sub2api/blob/main/docs/PAYMENT_CN.md"
@@ -5586,6 +5640,7 @@ const sendingTestEmail = ref(false);
 const smtpPasswordManuallyEdited = ref(false);
 const testEmailAddress = ref("");
 const registrationEmailSuffixWhitelistTags = ref<string[]>([]);
+const telemetryPrivacyHMACKeyInput = ref("");
 const registrationEmailSuffixWhitelistDraft = ref("");
 const tablePageSizeOptionsInput = ref("10, 20, 50, 100");
 
@@ -5836,6 +5891,8 @@ const form = reactive<SettingsForm>({
   enable_metadata_passthrough: false,
   enable_cch_signing: false,
   enable_anthropic_cache_ttl_1h_injection: false,
+  telemetry_privacy_hmac_key_configured: false,
+  telemetry_privacy_hmac_key: '' as string | undefined,
   // Balance & quota notification
   balance_low_notify_enabled: false,
   balance_low_notify_threshold: 0,
@@ -6371,6 +6428,8 @@ async function loadSettings() {
     registrationEmailSuffixWhitelistDraft.value = "";
     form.smtp_password = "";
     smtpPasswordManuallyEdited.value = false;
+    form.telemetry_privacy_hmac_key = undefined;
+    telemetryPrivacyHMACKeyInput.value = "";
     form.turnstile_secret_key = "";
     form.linuxdo_connect_client_secret = "";
     form.wechat_connect_app_secret = "";
@@ -6746,6 +6805,9 @@ async function saveSettings() {
       enable_cch_signing: form.enable_cch_signing,
       enable_anthropic_cache_ttl_1h_injection:
         form.enable_anthropic_cache_ttl_1h_injection,
+      telemetry_privacy_hmac_key: form.telemetry_privacy_hmac_key
+        ? form.telemetry_privacy_hmac_key
+        : undefined,
       // Payment configuration
       payment_enabled: form.payment_enabled,
       payment_min_amount: Number(form.payment_min_amount) || 0,
@@ -6843,6 +6905,8 @@ async function saveSettings() {
     registrationEmailSuffixWhitelistDraft.value = "";
     form.smtp_password = "";
     smtpPasswordManuallyEdited.value = false;
+    form.telemetry_privacy_hmac_key = undefined;
+    telemetryPrivacyHMACKeyInput.value = "";
     form.turnstile_secret_key = "";
     form.linuxdo_connect_client_secret = "";
     form.wechat_connect_app_secret = "";

@@ -147,6 +147,12 @@ type SystemSettings struct {
 	EnableCCHSigning                   bool `json:"enable_cch_signing"`
 	EnableAnthropicCacheTTL1hInjection bool `json:"enable_anthropic_cache_ttl_1h_injection"`
 
+	// Telemetry Privacy HMAC Key — 遥测隐私 HMAC 密钥
+	// 密钥值不通过 API 返回，仅返回是否已配置（与其他密钥字段模式一致）
+	TelemetryPrivacyHMACKeyConfigured bool `json:"telemetry_privacy_hmac_key_configured"`
+	// 仅 UpdateSettings 时写入（仅写字段），GetSettings 始终返回空
+	TelemetryPrivacyHMACKey string `json:"telemetry_privacy_hmac_key,omitempty"`
+
 	// Web Search Emulation
 	WebSearchEmulationEnabled bool `json:"web_search_emulation_enabled"`
 

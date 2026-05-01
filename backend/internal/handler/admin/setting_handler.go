@@ -210,6 +210,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		EnableMetadataPassthrough:              settings.EnableMetadataPassthrough,
 		EnableCCHSigning:                       settings.EnableCCHSigning,
 		EnableAnthropicCacheTTL1hInjection:     settings.EnableAnthropicCacheTTL1hInjection,
+		TelemetryPrivacyHMACKeyConfigured:      settings.TelemetryPrivacyHMACKeyConfigured,
 		WebSearchEmulationEnabled:              settings.WebSearchEmulationEnabled,
 		PaymentVisibleMethodAlipaySource:       settings.PaymentVisibleMethodAlipaySource,
 		PaymentVisibleMethodWxpaySource:        settings.PaymentVisibleMethodWxpaySource,
@@ -446,6 +447,9 @@ type UpdateSettingsRequest struct {
 	EnableMetadataPassthrough          *bool `json:"enable_metadata_passthrough"`
 	EnableCCHSigning                   *bool `json:"enable_cch_signing"`
 	EnableAnthropicCacheTTL1hInjection *bool `json:"enable_anthropic_cache_ttl_1h_injection"`
+
+	// Telemetry Privacy HMAC Key（仅写，重启后生效）
+	TelemetryPrivacyHMACKey *string `json:"telemetry_privacy_hmac_key,omitempty"`
 
 	// Payment visible method routing
 	PaymentVisibleMethodAlipaySource  *string `json:"payment_visible_method_alipay_source"`
@@ -1406,6 +1410,16 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	// Update OpenAI fast policy (stored under dedicated key, only when provided).
 	if req.OpenAIFastPolicySettings != nil {
 		if err := h.settingService.SetOpenAIFastPolicySettings(c.Request.Context(), openaiFastPolicySettingsFromDTO(req.OpenAIFastPolicySettings)); err != nil {
+			response.BadRequest(c, err.Error())
+			return
+		}
+	}
+
+	// Update Telemetry Privacy HMAC Key（仅写入，重启后生效）。
+	// 密钥值通过 SetPrivacyHMACKeyFromAdmin 持久化到 settings 表并更新内存。
+	// 空字符串表示不清除已有密钥（与其他密钥字段语义一致：不传即不修改）。
+	if req.TelemetryPrivacyHMACKey != nil && strings.TrimSpace(*req.TelemetryPrivacyHMACKey) != "" {
+		if err := service.SetPrivacyHMACKeyFromAdmin(c.Request.Context(), h.settingService.SettingRepo(), strings.TrimSpace(*req.TelemetryPrivacyHMACKey)); err != nil {
 			response.BadRequest(c, err.Error())
 			return
 		}

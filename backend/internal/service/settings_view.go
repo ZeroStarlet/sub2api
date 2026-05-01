@@ -157,6 +157,9 @@ type SystemSettings struct {
 	// Web Search Emulation
 	WebSearchEmulationEnabled bool // 是否启用 web search 模拟
 
+	// Telemetry Privacy HMAC Key
+	TelemetryPrivacyHMACKeyConfigured bool // 遥测隐私 HMAC 密钥是否已配置
+
 	// Payment visible method routing
 	PaymentVisibleMethodAlipaySource  string
 	PaymentVisibleMethodWxpaySource   string

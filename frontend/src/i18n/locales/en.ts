@@ -2569,7 +2569,7 @@ export default {
       schedulableEnabled: 'Scheduling enabled',
       schedulableDisabled: 'Scheduling disabled',
       telemetryPrivacyStatus: 'Protected {count}×',
-      telemetryPrivacyTooltip: 'Dropped: {dropped} — Stripped: {stripped}',
+      telemetryPrivacyTooltip: 'Dropped: {dropped} — Event Log: {log} — Stripped: {stripped} — Datadog needs client-side block',
       failedToToggleSchedulable: 'Failed to toggle scheduling status',
       groupCountTotal: '{count} groups total',
       platforms: {
@@ -3010,7 +3010,7 @@ export default {
         },
         telemetryPrivacy: {
           label: 'Telemetry Privacy',
-          hint: 'Strip identifying headers and system prompt metadata from upstream requests. Drops event logging, Datadog telemetry, and upstream proxy requests.'
+          hint: 'Strip identifying headers and system prompt metadata from upstream requests. Drops event logging and Claude Code internal telemetry. Note: Datadog telemetry goes directly to datadoghq.com and cannot be intercepted by the proxy — set DISABLE_TELEMETRY=1 on the client or block *.datadoghq.com at network level.'
         },
         cacheTTLOverride: {
           label: 'Cache TTL Override',
@@ -5027,6 +5027,16 @@ export default {
         cchSigningHint: 'Sign the billing header in forwarded requests with CCH hash. When disabled, the placeholder is preserved.',
         anthropicCacheTTL1hInjection: 'Anthropic Cache TTL Injection',
         anthropicCacheTTL1hInjectionHint: 'When enabled, existing ephemeral cache_control blocks in Anthropic OAuth/Setup Token request bodies are forced to 1h; response usage is billed back as 5m by default, with account-level TTL billing override taking priority.',
+      },
+      telemetryPrivacyHMACKey: {
+        title: 'Telemetry Privacy HMAC Key',
+        description: 'Configure the HMAC key used to derive anonymous device identifiers for the telemetry privacy feature. Restart required after change.',
+        label: 'HMAC Key (64-char hex)',
+        hint: 'Used to generate per-account unique and consistent anonymous device_id/UUID. Falls back to a default key if not set (not recommended for production).',
+        placeholder: 'Enter 64-char hex key...',
+        configured: 'Key configured',
+        generate: 'Generate Random Key',
+        restartNote: '⚠ Server restart required after key change. Derived identifiers remain consistent for the same account under the same key.',
       },
       webSearchEmulation: {
         title: 'Web Search Emulation',

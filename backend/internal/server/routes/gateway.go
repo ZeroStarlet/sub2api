@@ -220,8 +220,9 @@ func RegisterGatewayRoutes(
 
 // 遥测隐私端点拦截路由。
 // 这些路径在原版 sub2api 中无路由（返回 404），添加后使遥测隐私开关能够
-// 拦截 Claude Code 发送的事件日志、OAuth 账户信息、Datadog 遥测等请求。
-// 中间件链与 /v1 网关路由一致，确保 API Key 认证和分组校验。
+// 拦截 Claude Code 发送的事件日志、OAuth 账户信息、BigQuery 指标等请求。
+// 注意：Datadog 遥测直连 datadoghq.com 不经过代理，无法在此拦截。
+// 需客户端设置 DISABLE_TELEMETRY=1 或网络层屏蔽 *.datadoghq.com。
 func registerTelemetryPrivacyRoutes(r *gin.Engine, h *handler.Handlers, bodyLimit gin.HandlerFunc, clientRequestID gin.HandlerFunc, opsErrorLogger gin.HandlerFunc, endpointNorm gin.HandlerFunc, apiKeyAuth gin.HandlerFunc, requireGroupAnthropic gin.HandlerFunc) {
 	telemetryGroup := r.Group("/api")
 	telemetryGroup.Use(bodyLimit)
@@ -232,10 +233,30 @@ func registerTelemetryPrivacyRoutes(r *gin.Engine, h *handler.Handlers, bodyLimi
 	telemetryGroup.Use(requireGroupAnthropic)
 	{
 		// /api/event_logging/batch 已由 common.go 无条件静默丢弃（更安全：无需认证即可拦截）
-		// Grove 设置/OAuth 账户信息端点
+
+		// Grove 设置/OAuth 账户信息端点（精确路由）
 		telemetryGroup.POST("/oauth/account", h.Gateway.TelemetryIntercept)
+		// Grove 设置子路径（/api/oauth/account/settings、grove_notice_viewed 等）
+		telemetryGroup.Any("/oauth/account/*subpath", h.Gateway.TelemetryIntercept)
+		// OAuth CLI 端点（/api/oauth/claude_cli/*）已由 common.go 预认证无条件丢弃，
+		// 因这些请求使用 Bearer OAuth token 而非 sub2api API Key。
+
+		// Grove 功能配置（精确路由）
 		telemetryGroup.GET("/claude_code_grove", h.Gateway.TelemetryIntercept)
+		// Claude Code 内部 API 通配拦截：
+		// /api/claude_code/metrics（BigQuery 指标）、/api/claude_code/user_settings（设置同步）、
+		// /api/claude_code/team_memory（团队记忆）、/api/claude_code/policy_limits（策略限制）、
+		// /api/claude_code/settings（托管设置）、/api/claude_code/organizations/metrics_enabled 等
+		telemetryGroup.Any("/claude_code/*subpath", h.Gateway.TelemetryIntercept)
 	}
+
+	// 会话转录分享（不在 /api/claude_code/ 前缀下，需单独注册）
+	r.Any("/api/claude_code_shared_session_transcripts", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuth, requireGroupAnthropic, h.Gateway.TelemetryIntercept)
+	// 企鹅模式配置
+	r.Any("/api/claude_code_penguin_mode", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuth, requireGroupAnthropic, h.Gateway.TelemetryIntercept)
+	// Claude Code Bug 报告/反馈端点 — 包含完整对话转录和系统环境指纹
+	// CC-Source 路径：POST /api/claude_cli_feedback
+	r.Any("/api/claude_cli_feedback", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuth, requireGroupAnthropic, h.Gateway.TelemetryIntercept)
 
 	// 独立路径（不在 /api 前缀下）
 	r.POST("/upstreamproxy", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuth, requireGroupAnthropic, h.Gateway.TelemetryIntercept)
