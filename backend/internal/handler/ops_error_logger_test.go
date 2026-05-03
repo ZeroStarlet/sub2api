@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -85,6 +87,178 @@ func TestAttachOpsRequestBodyToEntry_InvalidJSONKeepsSize(t *testing.T) {
 	require.Equal(t, len(raw), *entry.RequestBodyBytes)
 	require.False(t, entry.RequestBodyTruncated)
 	require.Equal(t, int64(1), OpsErrorLogSanitizedTotal())
+}
+
+func TestApplyOpsTelemetryPrivacyErrorLogRedaction_ClearsModelAndBodyFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	service.MarkOpsTelemetryPrivacySkipRequestBody(c)
+	setOpsEndpointContext(c, "claude-3-7-sonnet-20250219", int16(2))
+
+	detail := `{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":"raw-user"}}`
+	entry := &service.OpsInsertErrorLogInput{
+		Model:          "claude-3-7-sonnet-20250219",
+		RequestedModel: "claude-3-7-sonnet-20250219",
+		UpstreamModel:  getOpsUpstreamModelForLog(c),
+		UserAgent:      "claude-cli/9.9.9 (external, cli)",
+		ErrorMessage:   "model claude-3-7-sonnet-20250219 not found",
+		ErrorBody:      detail,
+		UpstreamErrorMessage: func() *string {
+			msg := "upstream model claude-3-7-sonnet-20250219 failed"
+			return &msg
+		}(),
+		UpstreamErrorDetail: &detail,
+		RequestHeadersJSON:  &detail,
+		UpstreamErrors: []*service.OpsUpstreamErrorEvent{{
+			UpstreamStatusCode:   http.StatusBadGateway,
+			Kind:                 "request_error",
+			Message:              "model claude-3-7-sonnet-20250219 failed",
+			Detail:               detail,
+			UpstreamRequestBody:  detail,
+			UpstreamResponseBody: detail,
+		}},
+	}
+
+	applyOpsTelemetryPrivacyErrorLogRedaction(c, entry)
+
+	require.Empty(t, entry.Model)
+	require.Empty(t, entry.RequestedModel)
+	require.Empty(t, entry.UpstreamModel)
+	require.Empty(t, entry.UserAgent)
+	require.Equal(t, "遥测隐私保护已隐藏错误消息", entry.ErrorMessage)
+	require.Empty(t, entry.ErrorBody)
+	require.Nil(t, entry.UpstreamErrorMessage)
+	require.Nil(t, entry.UpstreamErrorDetail)
+	require.Nil(t, entry.RequestHeadersJSON)
+	require.Len(t, entry.UpstreamErrors, 1)
+	require.Equal(t, "遥测隐私保护已隐藏上游错误消息", entry.UpstreamErrors[0].Message)
+	require.Empty(t, entry.UpstreamErrors[0].Detail)
+	require.Empty(t, entry.UpstreamErrors[0].UpstreamRequestBody)
+	require.Empty(t, entry.UpstreamErrors[0].UpstreamResponseBody)
+
+	raw, err := json.Marshal(entry)
+	require.NoError(t, err)
+	text := string(raw)
+	require.NotContains(t, text, "claude-3-7-sonnet-20250219")
+	require.NotContains(t, text, "raw-user")
+	require.NotContains(t, text, "claude-cli/9.9.9")
+}
+
+func TestMarkOpsTelemetryPrivacyForAccount_ClearsExistingRequestContext(t *testing.T) {
+	resetOpsErrorLoggerStateForTest(t)
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Request.Header.Set("anthropic-beta", "claude-code-20250219")
+
+	raw := []byte(`{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":"raw-user"},"messages":[{"role":"user","content":"hello"}]}`)
+	setOpsRequestContext(c, "claude-3-7-sonnet-20250219", true, raw)
+	setOpsEndpointContext(c, "claude-3-7-sonnet-20250219", int16(2))
+
+	account := &service.Account{
+		ID:       4,
+		Platform: service.PlatformAnthropic,
+		Type:     service.AccountTypeOAuth,
+		Extra: map[string]any{
+			"telemetry_privacy_enabled": true,
+		},
+	}
+	markOpsTelemetryPrivacyForAccount(c, account)
+
+	require.True(t, service.ShouldSkipOpsRequestBodyForTelemetryPrivacy(c))
+	require.Equal(t, "", c.Request.Context().Value(ctxkey.Model))
+	require.Equal(t, "", getOpsUpstreamModelForLog(c))
+
+	model, ok := c.Get(opsModelKey)
+	require.True(t, ok)
+	require.Equal(t, "", model)
+	storedBody, ok := c.Get(opsRequestBodyKey)
+	require.True(t, ok)
+	require.Empty(t, storedBody)
+
+	entry := &service.OpsInsertErrorLogInput{
+		Model:          "claude-3-7-sonnet-20250219",
+		RequestedModel: "claude-3-7-sonnet-20250219",
+		UpstreamModel:  "claude-3-7-sonnet-20250219",
+		UserAgent:      "claude-cli/9.9.9 (external, cli)",
+		ErrorMessage:   "model claude-3-7-sonnet-20250219 failed",
+	}
+	entry.RequestHeadersJSON = extractOpsRetryRequestHeaders(c)
+	attachOpsRequestBodyToEntry(c, entry)
+	applyOpsTelemetryPrivacyErrorLogRedaction(c, entry)
+
+	require.Nil(t, entry.RequestHeadersJSON)
+	require.Nil(t, entry.RequestBodyJSON)
+	require.Nil(t, entry.RequestBodyBytes)
+	require.Empty(t, entry.Model)
+	require.Empty(t, entry.RequestedModel)
+	require.Empty(t, entry.UpstreamModel)
+	require.Empty(t, entry.UserAgent)
+	require.Equal(t, "遥测隐私保护已隐藏错误消息", entry.ErrorMessage)
+	require.Equal(t, int64(0), OpsErrorLogSanitizedTotal())
+}
+
+func TestMarkOpsTelemetryPrivacyForAccount_IgnoresNonPrivacyAccounts(t *testing.T) {
+	resetOpsErrorLoggerStateForTest(t)
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	raw := []byte(`{"model":"claude-3-7-sonnet-20250219"}`)
+	setOpsRequestContext(c, "claude-3-7-sonnet-20250219", false, raw)
+
+	account := &service.Account{
+		ID:       5,
+		Platform: service.PlatformAnthropic,
+		Type:     service.AccountTypeOAuth,
+		Extra: map[string]any{
+			"telemetry_privacy_enabled": false,
+		},
+	}
+	markOpsTelemetryPrivacyForAccount(c, account)
+
+	require.False(t, service.ShouldSkipOpsRequestBodyForTelemetryPrivacy(c))
+	require.Equal(t, "claude-3-7-sonnet-20250219", c.Request.Context().Value(ctxkey.Model))
+
+	entry := &service.OpsInsertErrorLogInput{}
+	attachOpsRequestBodyToEntry(c, entry)
+
+	require.NotNil(t, entry.RequestBodyJSON)
+	require.NotNil(t, entry.RequestBodyBytes)
+	require.Equal(t, int64(1), OpsErrorLogSanitizedTotal())
+}
+
+func TestSetOpsRequestContext_SkipTelemetryPrivacyDoesNotStoreLaterBody(t *testing.T) {
+	resetOpsErrorLoggerStateForTest(t)
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	service.MarkOpsTelemetryPrivacySkipRequestBody(c)
+
+	setOpsRequestContext(c, "claude-3-7-sonnet-20250219", true, []byte(`{"model":"claude-3-7-sonnet-20250219"}`))
+	setOpsEndpointContext(c, "claude-3-7-sonnet-20250219", int16(2))
+
+	model, ok := c.Get(opsModelKey)
+	require.True(t, ok)
+	require.Equal(t, "", model)
+	_, ok = c.Get(opsRequestBodyKey)
+	require.False(t, ok)
+	require.Equal(t, "", getOpsUpstreamModelForLog(c))
+	require.Nil(t, extractOpsRetryRequestHeaders(c))
+
+	entry := &service.OpsInsertErrorLogInput{}
+	attachOpsRequestBodyToEntry(c, entry)
+	require.Nil(t, entry.RequestBodyJSON)
+	require.Nil(t, entry.RequestBodyBytes)
+	require.Equal(t, int64(0), OpsErrorLogSanitizedTotal())
 }
 
 func TestEnqueueOpsErrorLog_QueueFullDrop(t *testing.T) {

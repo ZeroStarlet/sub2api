@@ -21,6 +21,11 @@ const (
 	// This value is sanitized+trimmed before being persisted.
 	OpsUpstreamRequestBodyKey = "ops_upstream_request_body"
 
+	// OpsTelemetryPrivacySkipRequestBodyKey 表示当前请求启用了账号级遥测隐私保护。
+	// 运维错误日志和上游错误事件必须跳过请求正文捕获，不能为了重试能力保存模型、消息正文、
+	// metadata.user_id 或任何原始/派生遥测标识。
+	OpsTelemetryPrivacySkipRequestBodyKey = "ops_telemetry_privacy_skip_request_body"
+
 	// Optional stage latencies (milliseconds) for troubleshooting and alerting.
 	OpsAuthLatencyMsKey      = "ops_auth_latency_ms"
 	OpsRoutingLatencyMsKey   = "ops_routing_latency_ms"
@@ -42,8 +47,29 @@ func setOpsUpstreamRequestBody(c *gin.Context, body []byte) {
 	if c == nil || len(body) == 0 {
 		return
 	}
+	if ShouldSkipOpsRequestBodyForTelemetryPrivacy(c) {
+		return
+	}
 	// 热路径避免 string(body) 额外分配，按需在落库前再转换。
 	c.Set(OpsUpstreamRequestBodyKey, body)
+}
+
+func MarkOpsTelemetryPrivacySkipRequestBody(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Set(OpsTelemetryPrivacySkipRequestBodyKey, true)
+}
+
+func ShouldSkipOpsRequestBodyForTelemetryPrivacy(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	if v, ok := c.Get(OpsTelemetryPrivacySkipRequestBodyKey); ok {
+		skip, _ := v.(bool)
+		return skip
+	}
+	return false
 }
 
 func SetOpsLatencyMs(c *gin.Context, key string, value int64) {
@@ -129,11 +155,14 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	if ev.Message != "" {
 		ev.Message = sanitizeUpstreamErrorMessage(ev.Message)
 	}
+	if ShouldSkipOpsRequestBodyForTelemetryPrivacy(c) {
+		ev.UpstreamRequestBody = ""
+	}
 
 	// If the caller didn't explicitly pass upstream request body but the gateway
 	// stored it on the context, attach it so ops can retry this specific attempt.
 	if ev.UpstreamRequestBody == "" {
-		if v, ok := c.Get(OpsUpstreamRequestBodyKey); ok {
+		if v, ok := c.Get(OpsUpstreamRequestBodyKey); ok && !ShouldSkipOpsRequestBodyForTelemetryPrivacy(c) {
 			switch raw := v.(type) {
 			case string:
 				ev.UpstreamRequestBody = strings.TrimSpace(raw)

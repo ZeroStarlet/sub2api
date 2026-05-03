@@ -337,9 +337,13 @@ func setOpsRequestContext(c *gin.Context, model string, stream bool, requestBody
 		return
 	}
 	model = strings.TrimSpace(model)
+	if service.ShouldSkipOpsRequestBodyForTelemetryPrivacy(c) {
+		model = ""
+		requestBody = nil
+	}
 	c.Set(opsModelKey, model)
 	c.Set(opsStreamKey, stream)
-	if len(requestBody) > 0 {
+	if len(requestBody) > 0 && !service.ShouldSkipOpsRequestBodyForTelemetryPrivacy(c) {
 		c.Set(opsRequestBodyKey, requestBody)
 	}
 	if c.Request != nil && model != "" {
@@ -354,14 +358,82 @@ func setOpsEndpointContext(c *gin.Context, upstreamModel string, requestType int
 	if c == nil {
 		return
 	}
+	if service.ShouldSkipOpsRequestBodyForTelemetryPrivacy(c) {
+		upstreamModel = ""
+		c.Set(opsUpstreamModelKey, "")
+	}
 	if upstreamModel = strings.TrimSpace(upstreamModel); upstreamModel != "" {
 		c.Set(opsUpstreamModelKey, upstreamModel)
 	}
 	c.Set(opsRequestTypeKey, requestType)
 }
 
+// markOpsTelemetryPrivacyForAccount 在账号选中后立即把本次请求切换到遥测隐私日志模式。
+// 参数 c 为当前 Gin 请求上下文，account 为已经通过调度器选中的上游账号；只有 Anthropic OAuth
+// 或 Setup Token 账号且显式启用遥测隐私保护时才会生效。该函数不会修改业务请求体、认证头或上游
+// 转发参数，只清理 Ops 观测上下文中可能被错误日志持久化的模型名、客户端请求正文和上游模型名。
+// 边界条件：nil 上下文、nil 账号、非遥测隐私账号均直接返回；重复调用是幂等的。副作用：后续
+// Ops 错误日志无法保存请求正文用于重试，也不会在访问日志上下文中继续展示模型名，这是隐私优先
+// 于运维重试便利性的刻意取舍。
+func markOpsTelemetryPrivacyForAccount(c *gin.Context, account *service.Account) {
+	if c == nil || account == nil || !account.IsTelemetryPrivacyEnabled() {
+		return
+	}
+	service.MarkOpsTelemetryPrivacySkipRequestBody(c)
+	c.Set(opsModelKey, "")
+	c.Set(opsRequestBodyKey, []byte{})
+	c.Set(opsUpstreamModelKey, "")
+	if c.Request != nil {
+		ctx := context.WithValue(c.Request.Context(), ctxkey.Model, "")
+		c.Request = c.Request.WithContext(ctx)
+	}
+}
+
+func getOpsUpstreamModelForLog(c *gin.Context) string {
+	if service.ShouldSkipOpsRequestBodyForTelemetryPrivacy(c) {
+		return ""
+	}
+	if c == nil {
+		return ""
+	}
+	if v, ok := c.Get(opsUpstreamModelKey); ok {
+		if s, ok := v.(string); ok {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
+}
+
+func applyOpsTelemetryPrivacyErrorLogRedaction(c *gin.Context, entry *service.OpsInsertErrorLogInput) {
+	if !service.ShouldSkipOpsRequestBodyForTelemetryPrivacy(c) || entry == nil {
+		return
+	}
+
+	entry.Model = ""
+	entry.RequestedModel = ""
+	entry.UpstreamModel = ""
+	entry.UserAgent = ""
+	entry.ErrorMessage = "遥测隐私保护已隐藏错误消息"
+	entry.ErrorBody = ""
+	entry.UpstreamErrorMessage = nil
+	entry.UpstreamErrorDetail = nil
+	entry.RequestHeadersJSON = nil
+	for _, ev := range entry.UpstreamErrors {
+		if ev == nil {
+			continue
+		}
+		ev.Message = "遥测隐私保护已隐藏上游错误消息"
+		ev.Detail = ""
+		ev.UpstreamRequestBody = ""
+		ev.UpstreamResponseBody = ""
+	}
+}
+
 func attachOpsRequestBodyToEntry(c *gin.Context, entry *service.OpsInsertErrorLogInput) {
 	if c == nil || entry == nil {
+		return
+	}
+	if service.ShouldSkipOpsRequestBodyForTelemetryPrivacy(c) {
 		return
 	}
 	v, ok := c.Get(opsRequestBodyKey)
@@ -530,6 +602,9 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			if s, ok := model.(string); ok {
 				modelName = s
 			}
+			if service.ShouldSkipOpsRequestBodyForTelemetryPrivacy(c) {
+				modelName = ""
+			}
 			stream := false
 			if b, ok := streamV.(bool); ok {
 				stream = b
@@ -647,14 +722,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 				InboundEndpoint:  GetInboundEndpoint(c),
 				UpstreamEndpoint: GetUpstreamEndpoint(c, platform),
 				RequestedModel:   modelName,
-				UpstreamModel: func() string {
-					if v, ok := c.Get(opsUpstreamModelKey); ok {
-						if s, ok := v.(string); ok {
-							return strings.TrimSpace(s)
-						}
-					}
-					return ""
-				}(),
+				UpstreamModel:    getOpsUpstreamModelForLog(c),
 				RequestType: func() *int16 {
 					if v, ok := c.Get(opsRequestTypeKey); ok {
 						switch t := v.(type) {
@@ -693,6 +761,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 				CreatedAt:   time.Now(),
 			}
 			applyOpsLatencyFieldsFromContext(c, entry)
+			applyOpsTelemetryPrivacyErrorLogRedaction(c, entry)
 
 			if apiKey != nil {
 				entry.APIKeyID = &apiKey.ID
@@ -717,6 +786,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			// Store request headers/body only when an upstream error occurred to keep overhead minimal.
 			entry.RequestHeadersJSON = extractOpsRetryRequestHeaders(c)
 			attachOpsRequestBodyToEntry(c, entry)
+			applyOpsTelemetryPrivacyErrorLogRedaction(c, entry)
 
 			// Skip logging if a passthrough rule with skip_monitoring=true matched.
 			if v, ok := c.Get(service.OpsSkipPassthroughKey); ok {
@@ -755,6 +825,9 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 		var modelName string
 		if s, ok := model.(string); ok {
 			modelName = s
+		}
+		if service.ShouldSkipOpsRequestBodyForTelemetryPrivacy(c) {
+			modelName = ""
 		}
 		stream := false
 		if b, ok := streamV.(bool); ok {
@@ -798,14 +871,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			InboundEndpoint:  GetInboundEndpoint(c),
 			UpstreamEndpoint: GetUpstreamEndpoint(c, platform),
 			RequestedModel:   modelName,
-			UpstreamModel: func() string {
-				if v, ok := c.Get(opsUpstreamModelKey); ok {
-					if s, ok := v.(string); ok {
-						return strings.TrimSpace(s)
-					}
-				}
-				return ""
-			}(),
+			UpstreamModel:    getOpsUpstreamModelForLog(c),
 			RequestType: func() *int16 {
 				if v, ok := c.Get(opsRequestTypeKey); ok {
 					switch t := v.(type) {
@@ -893,6 +959,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 				}
 			}
 		}
+		applyOpsTelemetryPrivacyErrorLogRedaction(c, entry)
 
 		if apiKey != nil {
 			entry.APIKeyID = &apiKey.ID
@@ -918,6 +985,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 		// Do NOT store Authorization/Cookie/etc.
 		entry.RequestHeadersJSON = extractOpsRetryRequestHeaders(c)
 		attachOpsRequestBodyToEntry(c, entry)
+		applyOpsTelemetryPrivacyErrorLogRedaction(c, entry)
 
 		enqueueOpsErrorLog(ops, entry)
 	}
@@ -938,6 +1006,9 @@ func isCountTokensRequest(c *gin.Context) bool {
 
 func extractOpsRetryRequestHeaders(c *gin.Context) *string {
 	if c == nil || c.Request == nil {
+		return nil
+	}
+	if service.ShouldSkipOpsRequestBodyForTelemetryPrivacy(c) {
 		return nil
 	}
 

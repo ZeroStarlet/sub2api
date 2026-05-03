@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -236,6 +237,34 @@ func (s *HTTPUpstreamSuite) TestAccountConcurrencyFallbackToDefault() {
 	require.Equal(s.T(), 66, transport.MaxConnsPerHost, "MaxConnsPerHost fallback mismatch")
 	require.Equal(s.T(), 77, transport.MaxIdleConns, "MaxIdleConns fallback mismatch")
 	require.Equal(s.T(), 55, transport.MaxIdleConnsPerHost, "MaxIdleConnsPerHost fallback mismatch")
+}
+
+// TestTLSProfileIsolation_DifferentProfilesUseDifferentClients 验证 TLS 指纹 profile 会参与客户端缓存键。
+// 同一账号、同一代理和同一连接池参数下，Transport 创建时会固定绑定 profile；如果缓存键忽略 profile，
+// 遥测隐私保护把自定义 TLS 指纹强制切回内置默认指纹时，可能继续复用旧 Transport 并把异常指纹发给上游。
+// 本测试不发起网络请求，只通过 getClientEntryWithTLS 的 markInFlight=false 路径创建缓存条目，避免泄漏计数和
+// 外部网络副作用。
+func (s *HTTPUpstreamSuite) TestTLSProfileIsolation_DifferentProfilesUseDifferentClients() {
+	s.cfg.Gateway = config.GatewayConfig{ConnectionPoolIsolation: config.ConnectionPoolIsolationAccountProxy}
+	svc := s.newService()
+
+	defaultProfile := &tlsfingerprint.Profile{Name: "Built-in Default (Node.js 24.x)"}
+	customProfile := &tlsfingerprint.Profile{
+		Name:         "custom",
+		CipherSuites: []uint16{0x1301, 0x1302},
+	}
+
+	entryDefault, err := svc.getClientEntryWithTLS("", 4, 2, defaultProfile, false, true)
+	require.NoError(s.T(), err)
+	entryCustom, err := svc.getClientEntryWithTLS("", 4, 2, customProfile, false, true)
+	require.NoError(s.T(), err)
+	entryDefaultAgain, err := svc.getClientEntryWithTLS("", 4, 2, defaultProfile, false, true)
+	require.NoError(s.T(), err)
+
+	require.NotSame(s.T(), entryDefault, entryCustom, "不同 TLS profile 不应复用同一个客户端")
+	require.Same(s.T(), entryDefault, entryDefaultAgain, "相同 TLS profile 应继续复用同一个客户端")
+	require.Equal(s.T(), 2, len(svc.clients), "同账号同代理但不同 TLS profile 应缓存两个客户端")
+	require.NotEqual(s.T(), entryDefault.poolKey, entryCustom.poolKey, "连接池键必须包含 TLS profile 指纹")
 }
 
 // TestEvictOverLimitRemovesOldestIdle 测试超出数量限制时的 LRU 淘汰

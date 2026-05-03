@@ -3,6 +3,7 @@ package repository
 import (
 	"compress/flate"
 	"compress/gzip"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -212,6 +213,39 @@ func (s *httpUpstreamService) acquireClientWithTLS(proxyURL string, accountID in
 	return s.getClientEntryWithTLS(proxyURL, accountID, accountConcurrency, profile, true, true)
 }
 
+func tlsProfileCacheKey(profile *tlsfingerprint.Profile) string {
+	if profile == nil {
+		return "none"
+	}
+	h := sha256.New()
+	_, _ = fmt.Fprintf(h, "name=%s|grease=%t|", profile.Name, profile.EnableGREASE)
+	writeUint16Slice := func(label string, values []uint16) {
+		_, _ = fmt.Fprintf(h, "%s=", label)
+		for _, v := range values {
+			_, _ = fmt.Fprintf(h, "%04x,", v)
+		}
+		_, _ = fmt.Fprint(h, "|")
+	}
+	writeStringSlice := func(label string, values []string) {
+		_, _ = fmt.Fprintf(h, "%s=", label)
+		for _, v := range values {
+			_, _ = fmt.Fprintf(h, "%s,", v)
+		}
+		_, _ = fmt.Fprint(h, "|")
+	}
+	writeUint16Slice("cipher", profile.CipherSuites)
+	writeUint16Slice("curves", profile.Curves)
+	writeUint16Slice("points", profile.PointFormats)
+	writeUint16Slice("sig", profile.SignatureAlgorithms)
+	writeStringSlice("alpn", profile.ALPNProtocols)
+	writeUint16Slice("versions", profile.SupportedVersions)
+	writeUint16Slice("keyshare", profile.KeyShareGroups)
+	writeUint16Slice("psk", profile.PSKModes)
+	writeUint16Slice("ext", profile.Extensions)
+	sum := h.Sum(nil)
+	return fmt.Sprintf("%x", sum[:16])
+}
+
 // getClientEntryWithTLS 获取或创建带 TLS 指纹的客户端条目
 // TLS 指纹客户端使用独立的缓存键，与普通客户端隔离
 func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile, markInFlight bool, enforceLimit bool) (*upstreamClientEntry, error) {
@@ -220,9 +254,11 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 	if err != nil {
 		return nil, err
 	}
-	// TLS 指纹客户端使用独立的缓存键，加 "tls:" 前缀
-	cacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID)
-	poolKey := s.buildPoolKey(isolation, accountConcurrency) + ":tls"
+	profileKey := tlsProfileCacheKey(profile)
+	// TLS 指纹客户端必须把 profile 纳入缓存键。Transport 只在创建时绑定 profile；
+	// 如果复用同账号旧客户端，遥测隐私从自定义 profile 切到内置默认值时会继续沿用旧 TLS 指纹。
+	cacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID) + ":profile:" + profileKey
+	poolKey := s.buildPoolKey(isolation, accountConcurrency) + ":tls:" + profileKey
 
 	now := time.Now()
 	nowUnix := now.UnixNano()
