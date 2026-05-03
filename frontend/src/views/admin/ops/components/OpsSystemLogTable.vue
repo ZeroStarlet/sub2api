@@ -138,6 +138,16 @@ const formatTelemetryPrivacyEndpoint = (endpoint: string) => {
   return endpoint || '-'
 }
 
+const pushExtraStringField = (parts: string[], extra: Record<string, any> | undefined, label: string, key: string) => {
+  const value = getExtraString(extra, key)
+  parts.push(`${label}=${value || '-'}`)
+}
+
+const pushExtraBoolField = (parts: string[], extra: Record<string, any> | undefined, label: string, key: string) => {
+  const value = getExtraBoolLabel(extra, key)
+  parts.push(`${label}=${value || '否'}`)
+}
+
 const formatSystemLogDetail = (row: OpsSystemLog) => {
   const parts: string[] = []
   const msg = String(row.message || '').trim()
@@ -161,7 +171,8 @@ const formatSystemLogDetail = (row: OpsSystemLog) => {
   if (accessParts.length > 0) parts.push(accessParts.join(' '))
 
   const isTelemetryPrivacyLog = extra.telemetry_privacy === true || extra.telemetry_privacy === 'true'
-  // 遥测隐私日志只展示处理策略、布尔校验结果和安全计数，不展示原始或派生后的遥测标识。
+  // 管理员排查遥测隐私保护时需要同时核对客户端原始指纹和上游最终伪装值；这里仅拼接
+  // 遥测与指纹审计字段，仍不展示认证值、模型名或请求正文，避免把业务内容混入系统日志详情。
   if (isTelemetryPrivacyLog) {
     const privacyParts: string[] = []
     privacyParts.push('遥测隐私=已处理')
@@ -231,6 +242,50 @@ const formatSystemLogDetail = (row: OpsSystemLog) => {
     privacyParts.push(`模型与消息正文改写=${getExtraBoolLabel(extra, 'model_or_messages_body_protected') || '否'}`)
     privacyParts.push(`记录敏感原值=${getExtraBoolLabel(extra, 'sensitive_values_logged') || '否'}`)
     privacyParts.push(`敏感值记录原因=${getExtraString(extra, 'sensitive_values_logged_reason') || '-'}`)
+    pushExtraStringField(privacyParts, extra, '原始metadata.user_id值', 'raw_metadata_user_id')
+    pushExtraBoolField(privacyParts, extra, '原始metadata.user_id可解析', 'raw_metadata_user_id_parsed')
+    pushExtraStringField(privacyParts, extra, '原始metadata.user_id格式', 'raw_metadata_user_id_format')
+    pushExtraStringField(privacyParts, extra, '原始device_id值', 'raw_device_id')
+    pushExtraStringField(privacyParts, extra, '原始account_uuid值', 'raw_account_uuid')
+    pushExtraStringField(privacyParts, extra, '原始session_id值', 'raw_session_id')
+    pushExtraStringField(privacyParts, extra, '原始X-Claude-Code-Session-Id值', 'raw_x_claude_code_session_id')
+    pushExtraStringField(privacyParts, extra, '原始x-client-request-id值', 'raw_x_client_request_id')
+    pushExtraStringField(privacyParts, extra, '原始Accept值', 'raw_accept')
+    pushExtraStringField(privacyParts, extra, '原始User-Agent值', 'raw_user_agent')
+    pushExtraStringField(privacyParts, extra, '原始X-App值', 'raw_x_app')
+    pushExtraStringField(privacyParts, extra, '原始Direct-Browser-Access值', 'raw_direct_browser_access')
+    pushExtraStringField(privacyParts, extra, '原始X-Stainless-Lang值', 'raw_x_stainless_lang')
+    pushExtraStringField(privacyParts, extra, '原始X-Stainless-Package-Version值', 'raw_x_stainless_package_version')
+    pushExtraStringField(privacyParts, extra, '原始X-Stainless-OS值', 'raw_x_stainless_os')
+    pushExtraStringField(privacyParts, extra, '原始X-Stainless-Arch值', 'raw_x_stainless_arch')
+    pushExtraStringField(privacyParts, extra, '原始X-Stainless-Runtime值', 'raw_x_stainless_runtime')
+    pushExtraStringField(privacyParts, extra, '原始X-Stainless-Runtime-Version值', 'raw_x_stainless_runtime_version')
+    pushExtraStringField(privacyParts, extra, '原始X-Stainless-Retry-Count值', 'raw_x_stainless_retry_count')
+    pushExtraStringField(privacyParts, extra, '原始X-Stainless-Timeout值', 'raw_x_stainless_timeout')
+    pushExtraStringField(privacyParts, extra, '派生metadata.user_id上游值', 'derived_metadata_user_id')
+    pushExtraStringField(privacyParts, extra, '派生metadata.user_id候选值', 'derived_metadata_user_id_candidate')
+    pushExtraBoolField(privacyParts, extra, '派生metadata.user_id发送上游', 'derived_metadata_user_id_upstream')
+    pushExtraStringField(privacyParts, extra, '派生device_id上游值', 'derived_device_id')
+    pushExtraStringField(privacyParts, extra, '派生device_id候选值', 'derived_device_id_candidate')
+    pushExtraStringField(privacyParts, extra, '派生account_uuid上游值', 'derived_account_uuid')
+    pushExtraStringField(privacyParts, extra, '派生account_uuid候选值', 'derived_account_uuid_candidate')
+    pushExtraStringField(privacyParts, extra, '派生session_id上游值', 'derived_session_id')
+    pushExtraStringField(privacyParts, extra, '派生session_id候选值', 'derived_session_id_candidate')
+    pushExtraStringField(privacyParts, extra, '派生X-Claude-Code-Session-Id值', 'derived_x_claude_code_session_id')
+    pushExtraStringField(privacyParts, extra, '派生x-client-request-id值', 'derived_x_client_request_id')
+    pushExtraStringField(privacyParts, extra, '派生Accept值', 'derived_accept')
+    pushExtraStringField(privacyParts, extra, '派生User-Agent值', 'derived_user_agent')
+    pushExtraStringField(privacyParts, extra, '派生X-App值', 'derived_x_app')
+    pushExtraStringField(privacyParts, extra, '派生Direct-Browser-Access值', 'derived_direct_browser_access')
+    pushExtraStringField(privacyParts, extra, '派生X-Stainless-Lang值', 'derived_x_stainless_lang')
+    pushExtraStringField(privacyParts, extra, '派生X-Stainless-Package-Version值', 'derived_x_stainless_package_version')
+    pushExtraStringField(privacyParts, extra, '派生X-Stainless-OS值', 'derived_x_stainless_os')
+    pushExtraStringField(privacyParts, extra, '派生X-Stainless-Arch值', 'derived_x_stainless_arch')
+    pushExtraStringField(privacyParts, extra, '派生X-Stainless-Runtime值', 'derived_x_stainless_runtime')
+    pushExtraStringField(privacyParts, extra, '派生X-Stainless-Runtime-Version值', 'derived_x_stainless_runtime_version')
+    pushExtraStringField(privacyParts, extra, '派生X-Stainless-Retry-Count值', 'derived_x_stainless_retry_count')
+    pushExtraStringField(privacyParts, extra, '派生X-Stainless-Timeout值', 'derived_x_stainless_timeout')
+    pushExtraStringField(privacyParts, extra, '派生TLS指纹配置', 'derived_tls_fingerprint_profile')
     privacyParts.push(`原始device_id记录=${getExtraBoolLabel(extra, 'raw_device_id_logged') || '否'}`)
     privacyParts.push(`原始session_id记录=${getExtraBoolLabel(extra, 'raw_session_id_logged') || '否'}`)
     privacyParts.push(`原始account_uuid记录=${getExtraBoolLabel(extra, 'raw_account_uuid_logged') || '否'}`)
