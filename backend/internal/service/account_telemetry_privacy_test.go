@@ -79,6 +79,79 @@ func (s *telemetryPrivacyCounterRepoStub) IncrementExtraCounter(_ context.Contex
 	return nil
 }
 
+type telemetryPrivacySettingRepoStub struct {
+	values map[string]string
+}
+
+func (s *telemetryPrivacySettingRepoStub) Get(_ context.Context, key string) (*Setting, error) {
+	if s == nil {
+		return nil, ErrSettingNotFound
+	}
+	if value, ok := s.values[key]; ok {
+		return &Setting{Key: key, Value: value}, nil
+	}
+	return nil, ErrSettingNotFound
+}
+
+func (s *telemetryPrivacySettingRepoStub) GetValue(_ context.Context, key string) (string, error) {
+	if s == nil {
+		return "", ErrSettingNotFound
+	}
+	if value, ok := s.values[key]; ok {
+		return value, nil
+	}
+	return "", ErrSettingNotFound
+}
+
+func (s *telemetryPrivacySettingRepoStub) Set(_ context.Context, key, value string) error {
+	if s.values == nil {
+		s.values = map[string]string{}
+	}
+	s.values[key] = value
+	return nil
+}
+
+func (s *telemetryPrivacySettingRepoStub) GetMultiple(_ context.Context, keys []string) (map[string]string, error) {
+	result := make(map[string]string)
+	if s == nil {
+		return result, nil
+	}
+	for _, key := range keys {
+		if value, ok := s.values[key]; ok {
+			result[key] = value
+		}
+	}
+	return result, nil
+}
+
+func (s *telemetryPrivacySettingRepoStub) SetMultiple(_ context.Context, settings map[string]string) error {
+	if s.values == nil {
+		s.values = map[string]string{}
+	}
+	for key, value := range settings {
+		s.values[key] = value
+	}
+	return nil
+}
+
+func (s *telemetryPrivacySettingRepoStub) GetAll(_ context.Context) (map[string]string, error) {
+	result := make(map[string]string)
+	if s == nil {
+		return result, nil
+	}
+	for key, value := range s.values {
+		result[key] = value
+	}
+	return result, nil
+}
+
+func (s *telemetryPrivacySettingRepoStub) Delete(_ context.Context, key string) error {
+	if s != nil && s.values != nil {
+		delete(s.values, key)
+	}
+	return nil
+}
+
 type telemetryPrivacyLogSinkStub struct {
 	events []*logger.LogEvent
 }
@@ -97,6 +170,32 @@ func (r *telemetryPrivacyHTTPUpstreamRecorder) Do(req *http.Request, proxyURL st
 
 func (r *telemetryPrivacyHTTPUpstreamRecorder) DoWithTLS(_ *http.Request, _ string, _ int64, _ int, profile *tlsfingerprint.Profile) (*http.Response, error) {
 	r.profile = profile
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"x-request-id": []string{"upstream-request-id"}},
+		Body:       io.NopCloser(strings.NewReader("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")),
+	}, nil
+}
+
+type telemetryPrivacyHTTPUpstreamBodyRecorder struct {
+	lastReq  *http.Request
+	lastBody []byte
+	profile  *tlsfingerprint.Profile
+}
+
+func (r *telemetryPrivacyHTTPUpstreamBodyRecorder) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	return r.DoWithTLS(req, proxyURL, accountID, accountConcurrency, nil)
+}
+
+func (r *telemetryPrivacyHTTPUpstreamBodyRecorder) DoWithTLS(req *http.Request, _ string, _ int64, _ int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	r.lastReq = req
+	r.profile = profile
+	if req != nil && req.Body != nil {
+		body, _ := io.ReadAll(req.Body)
+		r.lastBody = body
+		_ = req.Body.Close()
+		req.Body = io.NopCloser(bytes.NewReader(body))
+	}
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"x-request-id": []string{"upstream-request-id"}},
@@ -284,6 +383,58 @@ func TestGatewayService_BuildUpstreamRequest_AppliesTelemetryPrivacy(t *testing.
 	require.NotContains(t, string(body), "123e4567-e89b-12d3-a456-426614174000")
 }
 
+func TestGatewayService_BuildUpstreamRequest_TelemetryPrivacyAddsMissingSessionAndRequestIDHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	sink := &telemetryPrivacyLogSinkStub{}
+	logger.SetSink(sink)
+	t.Cleanup(func() {
+		logger.SetSink(nil)
+	})
+
+	account := telemetryPrivacyAnthropicAccount()
+	svc := &GatewayService{identityService: NewIdentityService(&telemetryPrivacyFailingIdentityCacheStub{})}
+	c := telemetryPrivacyGinContext()
+	c.Request.Header.Del("X-Claude-Code-Session-Id")
+	c.Request.Header.Del("x-client-request-id")
+
+	req, err := svc.buildUpstreamRequest(
+		context.Background(),
+		c,
+		account,
+		telemetryPrivacyRequestBody("1111111111111111111111111111111111111111111111111111111111111111", "550e8400-e29b-41d4-a716-446655440000", "123e4567-e89b-12d3-a456-426614174000"),
+		"oauth-token",
+		"oauth",
+		"claude-3-7-sonnet-20250219",
+		false,
+		false,
+	)
+	require.NoError(t, err)
+	require.Len(t, sink.events, 1)
+
+	body := telemetryPrivacyReadRequestBody(t, req)
+	parsed := ParseMetadataUserID(gjson.GetBytes(body, "metadata.user_id").String())
+	require.NotNil(t, parsed)
+	require.Equal(t, anthropicTelemetryPrivacySessionID(account), parsed.SessionID)
+	require.Equal(t, anthropicTelemetryPrivacySessionID(account), getHeaderRaw(req.Header, "X-Claude-Code-Session-Id"))
+	require.NotEmpty(t, getHeaderRaw(req.Header, "x-client-request-id"))
+
+	event := sink.events[0]
+	require.Equal(t, true, event.Fields["protection_success"])
+	require.Equal(t, true, event.Fields["header_privacy_protection_pass"])
+	require.Equal(t, false, event.Fields["x_claude_code_session_present"])
+	require.Equal(t, true, event.Fields["x_claude_code_session_changed"])
+	require.Equal(t, true, event.Fields["x_claude_code_session_final_protected"])
+	require.Equal(t, false, event.Fields["x_client_request_id_present"])
+	require.Equal(t, true, event.Fields["x_client_request_id_regenerated"])
+	require.Equal(t, "", event.Fields["raw_x_claude_code_session_id"])
+	require.Equal(t, "", event.Fields["raw_x_client_request_id"])
+	require.Equal(t, anthropicTelemetryPrivacySessionID(account), event.Fields["derived_x_claude_code_session_id"])
+	require.Equal(t, getHeaderRaw(req.Header, "x-client-request-id"), event.Fields["derived_x_client_request_id"])
+	require.Equal(t, formatAnthropicTelemetryPrivacyUserID(account), event.Fields["derived_metadata_user_id"])
+	require.Equal(t, formatAnthropicTelemetryPrivacyUserID(account), event.Fields["derived_metadata_user_id_candidate"])
+	require.Equal(t, true, event.Fields["derived_metadata_user_id_upstream"])
+}
+
 func TestGatewayService_BuildUpstreamRequest_TelemetryPrivacyUsesStableDeviceWhenFingerprintCacheFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	account := telemetryPrivacyAnthropicAccount()
@@ -325,6 +476,82 @@ func TestGatewayService_BuildUpstreamRequest_TelemetryPrivacyUsesStableDeviceWhe
 	require.Equal(t, claude.DefaultHeaders["User-Agent"], getHeaderRaw(reqB.Header, "User-Agent"))
 }
 
+func TestGatewayService_BuildUpstreamRequest_TelemetryPrivacyLogsStableIdentityPerAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	sink := &telemetryPrivacyLogSinkStub{}
+	logger.SetSink(sink)
+	t.Cleanup(func() {
+		logger.SetSink(nil)
+	})
+
+	account := telemetryPrivacyAnthropicAccount()
+	otherAccount := telemetryPrivacyAnthropicAccount()
+	otherAccount.ID = 99
+	svc := &GatewayService{identityService: NewIdentityService(&telemetryPrivacyFailingIdentityCacheStub{})}
+
+	reqA, err := svc.buildUpstreamRequest(
+		context.Background(),
+		telemetryPrivacyGinContext(),
+		account,
+		telemetryPrivacyRequestBody("1111111111111111111111111111111111111111111111111111111111111111", "550e8400-e29b-41d4-a716-446655440000", "123e4567-e89b-12d3-a456-426614174000"),
+		"oauth-token",
+		"oauth",
+		"claude-3-7-sonnet-20250219",
+		false,
+		false,
+	)
+	require.NoError(t, err)
+	reqB, err := svc.buildUpstreamRequest(
+		context.Background(),
+		telemetryPrivacyGinContext(),
+		account,
+		telemetryPrivacyRequestBody("2222222222222222222222222222222222222222222222222222222222222222", "650e8400-e29b-41d4-a716-446655440000", "223e4567-e89b-12d3-a456-426614174000"),
+		"oauth-token",
+		"oauth",
+		"claude-3-7-sonnet-20250219",
+		false,
+		false,
+	)
+	require.NoError(t, err)
+	reqC, err := svc.buildUpstreamRequest(
+		context.Background(),
+		telemetryPrivacyGinContext(),
+		otherAccount,
+		telemetryPrivacyRequestBody("3333333333333333333333333333333333333333333333333333333333333333", "750e8400-e29b-41d4-a716-446655440000", "323e4567-e89b-12d3-a456-426614174000"),
+		"oauth-token",
+		"oauth",
+		"claude-3-7-sonnet-20250219",
+		false,
+		false,
+	)
+	require.NoError(t, err)
+	require.Len(t, sink.events, 3)
+
+	first := sink.events[0].Fields
+	second := sink.events[1].Fields
+	third := sink.events[2].Fields
+	require.Equal(t, first["derived_metadata_user_id"], second["derived_metadata_user_id"])
+	require.Equal(t, first["derived_metadata_user_id_candidate"], second["derived_metadata_user_id_candidate"])
+	require.Equal(t, first["derived_device_id"], second["derived_device_id"])
+	require.Equal(t, first["derived_device_id_candidate"], second["derived_device_id_candidate"])
+	require.Equal(t, first["derived_session_id"], second["derived_session_id"])
+	require.Equal(t, first["derived_session_id_candidate"], second["derived_session_id_candidate"])
+	require.Equal(t, first["derived_x_claude_code_session_id"], second["derived_x_claude_code_session_id"])
+	require.Equal(t, first["derived_user_agent"], second["derived_user_agent"])
+	require.Equal(t, first["derived_tls_fingerprint_profile"], second["derived_tls_fingerprint_profile"])
+	require.NotEqual(t, first["derived_x_client_request_id"], second["derived_x_client_request_id"])
+	require.Equal(t, getHeaderRaw(reqA.Header, "x-client-request-id"), first["derived_x_client_request_id"])
+	require.Equal(t, getHeaderRaw(reqB.Header, "x-client-request-id"), second["derived_x_client_request_id"])
+
+	require.NotEqual(t, first["derived_metadata_user_id"], third["derived_metadata_user_id"])
+	require.NotEqual(t, first["derived_metadata_user_id_candidate"], third["derived_metadata_user_id_candidate"])
+	require.NotEqual(t, first["derived_device_id"], third["derived_device_id"])
+	require.NotEqual(t, first["derived_device_id_candidate"], third["derived_device_id_candidate"])
+	require.NotEqual(t, first["derived_session_id"], third["derived_session_id"])
+	require.NotEqual(t, first["derived_session_id_candidate"], third["derived_session_id_candidate"])
+	require.Equal(t, getHeaderRaw(reqC.Header, "x-client-request-id"), third["derived_x_client_request_id"])
+}
+
 func TestGatewayService_BuildUpstreamRequest_RecordsTelemetryPrivacyCount(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	account := telemetryPrivacyAnthropicAccount()
@@ -355,7 +582,7 @@ func TestGatewayService_BuildUpstreamRequest_RecordsTelemetryPrivacyCount(t *tes
 	require.Equal(t, int64(1), counterRepo.counts[account.ID])
 }
 
-func TestGatewayService_BuildUpstreamRequest_LogsTelemetryPrivacyWithoutRawIDs(t *testing.T) {
+func TestGatewayService_BuildUpstreamRequest_LogsTelemetryPrivacyRawAndDerivedValues(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	sink := &telemetryPrivacyLogSinkStub{}
 	logger.SetSink(sink)
@@ -368,12 +595,16 @@ func TestGatewayService_BuildUpstreamRequest_LogsTelemetryPrivacyWithoutRawIDs(t
 	cache := &telemetryPrivacyIdentityCacheStub{fingerprint: fp}
 	svc := &GatewayService{identityService: NewIdentityService(cache)}
 	c := telemetryPrivacyGinContext()
+	rawDeviceID := "1111111111111111111111111111111111111111111111111111111111111111"
+	rawAccountUUID := "550e8400-e29b-41d4-a716-446655440000"
+	rawSessionID := "123e4567-e89b-12d3-a456-426614174000"
+	rawUserID := FormatMetadataUserID(rawDeviceID, rawAccountUUID, rawSessionID, "2.1.92")
 
 	req, err := svc.buildUpstreamRequest(
 		context.Background(),
 		c,
 		account,
-		telemetryPrivacyRequestBody("1111111111111111111111111111111111111111111111111111111111111111", "550e8400-e29b-41d4-a716-446655440000", "123e4567-e89b-12d3-a456-426614174000"),
+		telemetryPrivacyRequestBody(rawDeviceID, rawAccountUUID, rawSessionID),
 		"oauth-token",
 		"oauth",
 		"claude-3-7-sonnet-20250219",
@@ -436,14 +667,45 @@ func TestGatewayService_BuildUpstreamRequest_LogsTelemetryPrivacyWithoutRawIDs(t
 	require.Equal(t, true, event.Fields["tls_fingerprint_final_default"])
 	require.Equal(t, "TLS 指纹已强制使用内置官方客户端默认值", event.Fields["tls_fingerprint_result"])
 	require.Equal(t, "强制使用内置官方客户端默认 TLS 指纹", event.Fields["tls_fingerprint_strategy"])
-	require.Equal(t, false, event.Fields["sensitive_values_logged"])
-	require.Equal(t, "仅记录布尔校验结果、计数与策略，不记录原始值或派生值", event.Fields["sensitive_values_logged_reason"])
-	require.Equal(t, false, event.Fields["raw_device_id_logged"])
-	require.Equal(t, false, event.Fields["raw_session_id_logged"])
-	require.Equal(t, false, event.Fields["raw_account_uuid_logged"])
-	require.Equal(t, false, event.Fields["raw_client_request_id_logged"])
-	require.Equal(t, false, event.Fields["derived_device_id_logged"])
-	require.Equal(t, false, event.Fields["derived_session_id_logged"])
+	require.Equal(t, true, event.Fields["raw_values_logged"])
+	require.Equal(t, "记录客户端入站 Claude Code 遥测与指纹字段，不记录认证值、模型或请求正文", event.Fields["raw_values_logged_scope"])
+	require.Equal(t, rawUserID, event.Fields["raw_metadata_user_id"])
+	require.Equal(t, true, event.Fields["raw_metadata_user_id_parsed"])
+	require.Equal(t, "json", event.Fields["raw_metadata_user_id_format"])
+	require.Equal(t, rawDeviceID, event.Fields["raw_device_id"])
+	require.Equal(t, rawAccountUUID, event.Fields["raw_account_uuid"])
+	require.Equal(t, rawSessionID, event.Fields["raw_session_id"])
+	require.Equal(t, rawSessionID, event.Fields["raw_x_claude_code_session_id"])
+	require.Equal(t, "client-request-id-real", event.Fields["raw_x_client_request_id"])
+	require.Equal(t, "claude-cli/2.1.92 (external, cli)", event.Fields["raw_user_agent"])
+	require.Equal(t, "Linux", event.Fields["raw_x_stainless_os"])
+	require.Equal(t, "arm64", event.Fields["raw_x_stainless_arch"])
+	require.Equal(t, true, event.Fields["derived_values_logged"])
+	require.Equal(t, "记录最终发往上游的账号级伪装派生值", event.Fields["derived_values_logged_scope"])
+	require.Equal(t, formatAnthropicTelemetryPrivacyUserID(account), event.Fields["derived_metadata_user_id"])
+	require.Equal(t, anthropicTelemetryPrivacyDeviceID(account), event.Fields["derived_device_id"])
+	require.Equal(t, "", event.Fields["derived_account_uuid"])
+	require.Equal(t, anthropicTelemetryPrivacySessionID(account), event.Fields["derived_session_id"])
+	require.Equal(t, anthropicTelemetryPrivacySessionID(account), event.Fields["derived_x_claude_code_session_id"])
+	require.Equal(t, getHeaderRaw(req.Header, "x-client-request-id"), event.Fields["derived_x_client_request_id"])
+	require.NotEqual(t, "client-request-id-real", event.Fields["derived_x_client_request_id"])
+	require.NotEmpty(t, event.Fields["derived_x_client_request_id"])
+	require.Equal(t, claude.DefaultHeaders["User-Agent"], event.Fields["derived_user_agent"])
+	require.Equal(t, claude.DefaultHeaders["X-Stainless-OS"], event.Fields["derived_x_stainless_os"])
+	require.Equal(t, "Built-in Default (Node.js 24.x)", event.Fields["derived_tls_fingerprint_profile"])
+	require.Equal(t, true, event.Fields["sensitive_values_logged"])
+	require.Equal(t, "按管理员审计要求记录客户端原始遥测值和账号级伪装派生值，不记录认证值、模型或请求正文", event.Fields["sensitive_values_logged_reason"])
+	require.Equal(t, true, event.Fields["raw_metadata_user_id_logged"])
+	require.Equal(t, true, event.Fields["raw_header_fingerprint_logged"])
+	require.Equal(t, true, event.Fields["raw_device_id_logged"])
+	require.Equal(t, true, event.Fields["raw_session_id_logged"])
+	require.Equal(t, true, event.Fields["raw_account_uuid_logged"])
+	require.Equal(t, true, event.Fields["raw_client_request_id_logged"])
+	require.Equal(t, true, event.Fields["derived_device_id_logged"])
+	require.Equal(t, true, event.Fields["derived_session_id_logged"])
+	require.Equal(t, true, event.Fields["derived_metadata_user_id_logged"])
+	require.Equal(t, true, event.Fields["derived_header_fingerprint_logged"])
+	require.Equal(t, true, event.Fields["derived_request_id_logged"])
 	require.Equal(t, false, event.Fields["authorization_value_logged"])
 	require.Equal(t, false, event.Fields["token_value_logged"])
 	require.Equal(t, false, event.Fields["model_value_logged"])
@@ -457,13 +719,13 @@ func TestGatewayService_BuildUpstreamRequest_LogsTelemetryPrivacyWithoutRawIDs(t
 	require.NotContains(t, text, "claude-3-7-sonnet-20250219")
 	require.NotContains(t, text, "oauth-token")
 	require.NotContains(t, text, "Bearer oauth-token")
-	require.NotContains(t, text, "1111111111111111111111111111111111111111111111111111111111111111")
-	require.NotContains(t, text, "550e8400-e29b-41d4-a716-446655440000")
-	require.NotContains(t, text, "123e4567-e89b-12d3-a456-426614174000")
-	require.NotContains(t, text, "client-request-id-real")
-	require.NotContains(t, text, getHeaderRaw(req.Header, "x-client-request-id"))
-	require.NotContains(t, text, anthropicTelemetryPrivacyDeviceID(account))
-	require.NotContains(t, text, anthropicTelemetryPrivacySessionID(account))
+	require.Contains(t, text, rawDeviceID)
+	require.Contains(t, text, rawAccountUUID)
+	require.Contains(t, text, rawSessionID)
+	require.Contains(t, text, "client-request-id-real")
+	require.Contains(t, text, getHeaderRaw(req.Header, "x-client-request-id"))
+	require.Contains(t, text, anthropicTelemetryPrivacyDeviceID(account))
+	require.Contains(t, text, anthropicTelemetryPrivacySessionID(account))
 
 	countReq, err := svc.buildCountTokensRequest(
 		context.Background(),
@@ -488,13 +750,13 @@ func TestGatewayService_BuildUpstreamRequest_LogsTelemetryPrivacyWithoutRawIDs(t
 	require.NotContains(t, countText, "claude-3-7-sonnet-20250219")
 	require.NotContains(t, countText, "oauth-token")
 	require.NotContains(t, countText, "Bearer oauth-token")
-	require.NotContains(t, countText, "2222222222222222222222222222222222222222222222222222222222222222")
-	require.NotContains(t, countText, "550e8400-e29b-41d4-a716-446655440000")
-	require.NotContains(t, countText, "223e4567-e89b-12d3-a456-426614174000")
-	require.NotContains(t, countText, "client-request-id-real")
-	require.NotContains(t, countText, getHeaderRaw(countReq.Header, "x-client-request-id"))
-	require.NotContains(t, countText, anthropicTelemetryPrivacyDeviceID(account))
-	require.NotContains(t, countText, anthropicTelemetryPrivacySessionID(account))
+	require.Contains(t, countText, "2222222222222222222222222222222222222222222222222222222222222222")
+	require.Contains(t, countText, "550e8400-e29b-41d4-a716-446655440000")
+	require.Contains(t, countText, "223e4567-e89b-12d3-a456-426614174000")
+	require.Contains(t, countText, "client-request-id-real")
+	require.Contains(t, countText, getHeaderRaw(countReq.Header, "x-client-request-id"))
+	require.Contains(t, countText, anthropicTelemetryPrivacyDeviceID(account))
+	require.Contains(t, countText, anthropicTelemetryPrivacySessionID(account))
 }
 
 func TestGatewayService_BuildUpstreamRequest_LogsTelemetryPrivacyMissingUserIDAsSafe(t *testing.T) {
@@ -541,13 +803,34 @@ func TestGatewayService_BuildUpstreamRequest_LogsTelemetryPrivacyMissingUserIDAs
 	require.Equal(t, false, event.Fields["metadata_user_id_protection_pass"])
 	require.Equal(t, true, event.Fields["header_privacy_protection_pass"])
 	require.Equal(t, true, event.Fields["tls_privacy_protection_pass"])
-	require.Equal(t, false, event.Fields["sensitive_values_logged"])
-	require.Equal(t, false, event.Fields["raw_device_id_logged"])
-	require.Equal(t, false, event.Fields["raw_session_id_logged"])
-	require.Equal(t, false, event.Fields["raw_account_uuid_logged"])
-	require.Equal(t, false, event.Fields["raw_client_request_id_logged"])
-	require.Equal(t, false, event.Fields["derived_device_id_logged"])
-	require.Equal(t, false, event.Fields["derived_session_id_logged"])
+	require.Equal(t, true, event.Fields["raw_values_logged"])
+	require.Equal(t, "", event.Fields["raw_metadata_user_id"])
+	require.Equal(t, false, event.Fields["raw_metadata_user_id_parsed"])
+	require.Equal(t, "", event.Fields["raw_device_id"])
+	require.Equal(t, "", event.Fields["raw_account_uuid"])
+	require.Equal(t, "", event.Fields["raw_session_id"])
+	require.Equal(t, "123e4567-e89b-12d3-a456-426614174000", event.Fields["raw_x_claude_code_session_id"])
+	require.Equal(t, "client-request-id-real", event.Fields["raw_x_client_request_id"])
+	require.Equal(t, true, event.Fields["derived_values_logged"])
+	require.Equal(t, "", event.Fields["derived_metadata_user_id"])
+	require.Equal(t, formatAnthropicTelemetryPrivacyUserID(account), event.Fields["derived_metadata_user_id_candidate"])
+	require.Equal(t, false, event.Fields["derived_metadata_user_id_upstream"])
+	require.Equal(t, "", event.Fields["derived_device_id"])
+	require.Equal(t, anthropicTelemetryPrivacyDeviceID(account), event.Fields["derived_device_id_candidate"])
+	require.Equal(t, "", event.Fields["derived_session_id"])
+	require.Equal(t, anthropicTelemetryPrivacySessionID(account), event.Fields["derived_session_id_candidate"])
+	require.Equal(t, anthropicTelemetryPrivacySessionID(account), event.Fields["derived_x_claude_code_session_id"])
+	require.Equal(t, getHeaderRaw(req.Header, "x-client-request-id"), event.Fields["derived_x_client_request_id"])
+	require.NotEqual(t, "client-request-id-real", event.Fields["derived_x_client_request_id"])
+	require.Equal(t, true, event.Fields["sensitive_values_logged"])
+	require.Equal(t, true, event.Fields["raw_metadata_user_id_logged"])
+	require.Equal(t, true, event.Fields["raw_header_fingerprint_logged"])
+	require.Equal(t, true, event.Fields["raw_device_id_logged"])
+	require.Equal(t, true, event.Fields["raw_session_id_logged"])
+	require.Equal(t, true, event.Fields["raw_account_uuid_logged"])
+	require.Equal(t, true, event.Fields["raw_client_request_id_logged"])
+	require.Equal(t, true, event.Fields["derived_device_id_logged"])
+	require.Equal(t, true, event.Fields["derived_session_id_logged"])
 	require.Equal(t, false, event.Fields["authorization_value_logged"])
 	require.Equal(t, false, event.Fields["token_value_logged"])
 	require.Equal(t, false, event.Fields["model_value_logged"])
@@ -559,11 +842,76 @@ func TestGatewayService_BuildUpstreamRequest_LogsTelemetryPrivacyMissingUserIDAs
 	require.NotContains(t, text, "claude-3-7-sonnet-20250219")
 	require.NotContains(t, text, "oauth-token")
 	require.NotContains(t, text, "Bearer oauth-token")
-	require.NotContains(t, text, "client-request-id-real")
+	require.Contains(t, text, "client-request-id-real")
 	require.NotContains(t, text, "hello")
-	require.NotContains(t, text, getHeaderRaw(req.Header, "x-client-request-id"))
-	require.NotContains(t, text, anthropicTelemetryPrivacyDeviceID(account))
-	require.NotContains(t, text, anthropicTelemetryPrivacySessionID(account))
+	require.Contains(t, text, getHeaderRaw(req.Header, "x-client-request-id"))
+	require.Contains(t, text, anthropicTelemetryPrivacyDeviceID(account))
+	require.Contains(t, text, anthropicTelemetryPrivacySessionID(account))
+}
+
+func TestGatewayService_Forward_TelemetryPrivacyRawValuesUseClientEntranceBeforeMimicry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	sink := &telemetryPrivacyLogSinkStub{}
+	logger.SetSink(sink)
+	t.Cleanup(func() {
+		logger.SetSink(nil)
+	})
+
+	account := telemetryPrivacyAnthropicAccount()
+	account.Credentials = map[string]any{"access_token": "oauth-token"}
+	upstream := &telemetryPrivacyHTTPUpstreamBodyRecorder{}
+	svc := &GatewayService{
+		identityService: NewIdentityService(&telemetryPrivacyFailingIdentityCacheStub{}),
+		settingService:  NewSettingService(&telemetryPrivacySettingRepoStub{}, nil),
+		httpUpstream:    upstream,
+	}
+	c := telemetryPrivacyGinContext()
+	c.Request.Header.Set("User-Agent", "opencode/1.0")
+	c.Request.Header.Set("X-Stainless-OS", "Windows")
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"stream":true}`)
+	parsed := &ParsedRequest{
+		Body:     body,
+		Model:    "claude-3-7-sonnet-20250219",
+		Stream:   true,
+		Messages: []any{map[string]any{"role": "user", "content": "hello"}},
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, parsed)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.Len(t, sink.events, 1)
+
+	upstreamUserID := gjson.GetBytes(upstream.lastBody, "metadata.user_id").String()
+	require.NotEmpty(t, upstreamUserID)
+	upstreamParsed := ParseMetadataUserID(upstreamUserID)
+	require.NotNil(t, upstreamParsed)
+	require.Equal(t, anthropicTelemetryPrivacyDeviceID(account), upstreamParsed.DeviceID)
+	require.Empty(t, upstreamParsed.AccountUUID)
+	require.Equal(t, anthropicTelemetryPrivacySessionID(account), upstreamParsed.SessionID)
+
+	event := sink.events[0]
+	require.Equal(t, true, event.Fields["protection_success"])
+	require.Equal(t, "", event.Fields["raw_metadata_user_id"])
+	require.Equal(t, false, event.Fields["raw_metadata_user_id_parsed"])
+	require.Equal(t, "", event.Fields["raw_device_id"])
+	require.Equal(t, "", event.Fields["raw_account_uuid"])
+	require.Equal(t, "", event.Fields["raw_session_id"])
+	require.Equal(t, "opencode/1.0", event.Fields["raw_user_agent"])
+	require.Equal(t, "Windows", event.Fields["raw_x_stainless_os"])
+	require.Equal(t, formatAnthropicTelemetryPrivacyUserID(account), event.Fields["derived_metadata_user_id"])
+	require.Equal(t, formatAnthropicTelemetryPrivacyUserID(account), event.Fields["derived_metadata_user_id_candidate"])
+	require.Equal(t, true, event.Fields["derived_metadata_user_id_upstream"])
+
+	raw, err := json.Marshal(event.Fields)
+	require.NoError(t, err)
+	text := string(raw)
+	require.NotContains(t, text, "claude-3-7-sonnet-20250219")
+	require.NotContains(t, text, "oauth-token")
+	require.NotContains(t, text, "hello")
+	require.Contains(t, text, "opencode/1.0")
+	require.Contains(t, text, anthropicTelemetryPrivacyDeviceID(account))
+	require.Contains(t, text, anthropicTelemetryPrivacySessionID(account))
 }
 
 func TestGatewayService_RecordTelemetryPrivacyLogsTLSOnlyProtection(t *testing.T) {
@@ -599,7 +947,7 @@ func TestGatewayService_RecordTelemetryPrivacyLogsTLSOnlyProtection(t *testing.T
 		Result:                "TLS 指纹已强制使用内置官方客户端默认值",
 	}
 
-	svc.recordAnthropicTelemetryPrivacyProtection(context.Background(), account, nil, "messages", bodyAudit, headerAudit, tlsAudit)
+	svc.recordAnthropicTelemetryPrivacyProtection(context.Background(), account, nil, "messages", bodyAudit, headerAudit, tlsAudit, anthropicTelemetryPrivacyRawValues{})
 	require.Len(t, sink.events, 1)
 
 	event := sink.events[0]
@@ -610,11 +958,21 @@ func TestGatewayService_RecordTelemetryPrivacyLogsTLSOnlyProtection(t *testing.T
 	require.Equal(t, true, event.Fields["metadata_user_id_absent_safe"])
 	require.Equal(t, true, event.Fields["header_privacy_protection_pass"])
 	require.Equal(t, true, event.Fields["tls_privacy_protection_pass"])
-	require.Equal(t, false, event.Fields["sensitive_values_logged"])
+	require.Equal(t, true, event.Fields["sensitive_values_logged"])
+	require.Equal(t, true, event.Fields["raw_values_logged"])
+	require.Equal(t, "", event.Fields["raw_metadata_user_id"])
+	require.Equal(t, true, event.Fields["derived_values_logged"])
+	require.Equal(t, "", event.Fields["derived_metadata_user_id"])
+	require.Equal(t, formatAnthropicTelemetryPrivacyUserID(account), event.Fields["derived_metadata_user_id_candidate"])
+	require.Equal(t, false, event.Fields["derived_metadata_user_id_upstream"])
+	require.Equal(t, "", event.Fields["derived_device_id"])
+	require.Equal(t, anthropicTelemetryPrivacyDeviceID(account), event.Fields["derived_device_id_candidate"])
+	require.Equal(t, "", event.Fields["derived_session_id"])
+	require.Equal(t, anthropicTelemetryPrivacySessionID(account), event.Fields["derived_session_id_candidate"])
 	require.Equal(t, false, event.Fields["request_body_logged"])
 }
 
-func TestGatewayService_BuildUpstreamRequest_LogsTelemetryPrivacyInvalidUserIDWithoutRawValue(t *testing.T) {
+func TestGatewayService_BuildUpstreamRequest_LogsTelemetryPrivacyInvalidUserIDWithRawValue(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	sink := &telemetryPrivacyLogSinkStub{}
 	logger.SetSink(sink)
@@ -658,6 +1016,13 @@ func TestGatewayService_BuildUpstreamRequest_LogsTelemetryPrivacyInvalidUserIDWi
 	require.Equal(t, true, event.Fields["metadata_session_id_protected"])
 	require.Equal(t, true, event.Fields["header_privacy_protection_pass"])
 	require.Equal(t, true, event.Fields["tls_privacy_protection_pass"])
+	require.Equal(t, rawUserID, event.Fields["raw_metadata_user_id"])
+	require.Equal(t, false, event.Fields["raw_metadata_user_id_parsed"])
+	require.Equal(t, "invalid", event.Fields["raw_metadata_user_id_format"])
+	require.Equal(t, true, event.Fields["raw_metadata_user_id_logged"])
+	require.Equal(t, formatAnthropicTelemetryPrivacyUserID(account), event.Fields["derived_metadata_user_id"])
+	require.Equal(t, anthropicTelemetryPrivacyDeviceID(account), event.Fields["derived_device_id"])
+	require.Equal(t, anthropicTelemetryPrivacySessionID(account), event.Fields["derived_session_id"])
 
 	bodyAfter := telemetryPrivacyReadRequestBody(t, req)
 	require.NotContains(t, string(bodyAfter), rawUserID)
@@ -670,12 +1035,12 @@ func TestGatewayService_BuildUpstreamRequest_LogsTelemetryPrivacyInvalidUserIDWi
 	raw, err := json.Marshal(event.Fields)
 	require.NoError(t, err)
 	text := string(raw)
-	require.NotContains(t, text, rawUserID)
+	require.Contains(t, text, rawUserID)
 	require.NotContains(t, text, "claude-3-7-sonnet-20250219")
 	require.NotContains(t, text, "oauth-token")
-	require.NotContains(t, text, getHeaderRaw(req.Header, "x-client-request-id"))
-	require.NotContains(t, text, anthropicTelemetryPrivacyDeviceID(account))
-	require.NotContains(t, text, anthropicTelemetryPrivacySessionID(account))
+	require.Contains(t, text, getHeaderRaw(req.Header, "x-client-request-id"))
+	require.Contains(t, text, anthropicTelemetryPrivacyDeviceID(account))
+	require.Contains(t, text, anthropicTelemetryPrivacySessionID(account))
 }
 
 func TestGatewayService_BuildUpstreamRequest_TelemetryPrivacySkipsOpsRequestBodyCapture(t *testing.T) {

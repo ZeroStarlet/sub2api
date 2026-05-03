@@ -36,6 +36,10 @@ func (s *GatewayService) ForwardAsResponses(
 	parsed *ParsedRequest,
 ) (*ForwardResult, error) {
 	startTime := time.Now()
+	if account != nil && account.IsTelemetryPrivacyEnabled() {
+		MarkOpsTelemetryPrivacySkipRequestBody(c)
+		captureAnthropicTelemetryPrivacyRawValues(c, body)
+	}
 
 	// 1. Parse Responses request
 	var responsesReq apicompat.ResponsesRequest

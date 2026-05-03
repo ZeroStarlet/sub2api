@@ -60,7 +60,8 @@ const (
 )
 
 const (
-	claudeMimicDebugInfoKey = "claude_mimic_debug_info"
+	claudeMimicDebugInfoKey      = "claude_mimic_debug_info"
+	telemetryPrivacyRawValuesKey = "telemetry_privacy_raw_values"
 )
 
 const (
@@ -1418,6 +1419,56 @@ type anthropicTelemetryPrivacyTLSAudit struct {
 	Result                  string
 }
 
+type anthropicTelemetryPrivacyDerivedValues struct {
+	MetadataUserID            string
+	MetadataUserIDCandidate   string
+	MetadataUserIDUpstream    bool
+	DeviceID                  string
+	DeviceIDCandidate         string
+	AccountUUID               string
+	AccountUUIDCandidate      string
+	SessionID                 string
+	SessionIDCandidate        string
+	XClaudeCodeSessionID      string
+	XClientRequestID          string
+	UserAgent                 string
+	Accept                    string
+	XApp                      string
+	DirectBrowserAccess       string
+	XStainlessLang            string
+	XStainlessPackageVersion  string
+	XStainlessOS              string
+	XStainlessArch            string
+	XStainlessRuntime         string
+	XStainlessRuntimeVersion  string
+	XStainlessRetryCount      string
+	XStainlessTimeout         string
+	TLSFingerprintProfileName string
+}
+
+type anthropicTelemetryPrivacyRawValues struct {
+	MetadataUserID           string
+	MetadataUserIDParsed     bool
+	MetadataUserIDFormat     string
+	DeviceID                 string
+	AccountUUID              string
+	SessionID                string
+	XClaudeCodeSessionID     string
+	XClientRequestID         string
+	UserAgent                string
+	Accept                   string
+	XApp                     string
+	DirectBrowserAccess      string
+	XStainlessLang           string
+	XStainlessPackageVersion string
+	XStainlessOS             string
+	XStainlessArch           string
+	XStainlessRuntime        string
+	XStainlessRuntimeVersion string
+	XStainlessRetryCount     string
+	XStainlessTimeout        string
+}
+
 // sanitizeAnthropicTelemetryPrivacyBody 在账号级遥测隐私开关开启时改写 body 中的
 // metadata.user_id。Claude Code 会把 device_id、account_uuid、session_id 放在
 // 该字段里，Anthropic 上游可据此关联本机、OAuth 账号和本地会话；这里保留字段格式，
@@ -1439,9 +1490,11 @@ func sanitizeAnthropicTelemetryPrivacyBody(body []byte, account *Account) ([]byt
 	return newBody, parsed, audit.Protected
 }
 
-// sanitizeAnthropicTelemetryPrivacyBodyWithAudit 返回安全审计结果，便于管理员判断保护是否真的成功。
-// 审计结果只包含“是否存在、是否解析、是否替换成功”等布尔值和原因码，不包含原始或替换后的
-// device_id、account_uuid、session_id、metadata.user_id 字符串，也不包含模型、正文或 token。
+// sanitizeAnthropicTelemetryPrivacyBodyWithAudit 返回请求正文保护的审计结果。
+// 该函数只负责改写请求正文并产出布尔校验、格式判断和原因码，不直接写系统日志；
+// 原始值和派生值由调用方在改写前后分别采集，最终统一写入管理员系统日志。这样可以保证
+// “原始客户端输入”和“最终上游输出”不会混在同一个阶段里，便于排查同一账号是否稳定收敛。
+// 注意：这里仍不得保存模型、消息正文或 token，它们不属于遥测身份保护的必要审计材料。
 func sanitizeAnthropicTelemetryPrivacyBodyWithAudit(body []byte, account *Account) ([]byte, *ParsedUserID, anthropicTelemetryPrivacyBodyAudit) {
 	audit := anthropicTelemetryPrivacyBodyAudit{
 		Result: "未启用遥测隐私保护",
@@ -1595,6 +1648,136 @@ func anthropicTelemetryPrivacySessionID(account *Account) string {
 	return generateUUIDFromSeed(fmt.Sprintf("anthropic_telemetry_privacy_account_session:%d", account.ID))
 }
 
+// buildAnthropicTelemetryPrivacyDerivedValues 返回最终会上游可见的账号级伪装值。
+// 这些值不是客户端原始值，而是由 sub2api 账号 ID、内置 Claude Code 默认头指纹和固定
+// TLS profile 派生；因此可用于管理员在系统日志中核对“同一账号是否始终同一身份指纹”。
+// 注意：本函数只从已经完成隐私覆盖的上游请求读取最终 header，不读取请求正文、认证 token
+// 或下游用户信息；metadata.user_id、device_id 和 session_id 只能来自账号级派生函数。
+func buildAnthropicTelemetryPrivacyDerivedValues(account *Account, req *http.Request, bodyAudit anthropicTelemetryPrivacyBodyAudit) anthropicTelemetryPrivacyDerivedValues {
+	deviceID := anthropicTelemetryPrivacyDeviceID(account)
+	sessionID := anthropicTelemetryPrivacySessionID(account)
+	metadataUserIDCandidate := formatAnthropicTelemetryPrivacyUserID(account)
+	values := anthropicTelemetryPrivacyDerivedValues{
+		MetadataUserIDCandidate:   metadataUserIDCandidate,
+		MetadataUserIDUpstream:    bodyAudit.MetadataUserIDProtectionPass,
+		DeviceIDCandidate:         deviceID,
+		AccountUUID:               "",
+		AccountUUIDCandidate:      "",
+		SessionIDCandidate:        sessionID,
+		XClaudeCodeSessionID:      sessionID,
+		UserAgent:                 claude.DefaultHeaders["User-Agent"],
+		Accept:                    "application/json",
+		XApp:                      claude.DefaultHeaders["X-App"],
+		DirectBrowserAccess:       claude.DefaultHeaders["Anthropic-Dangerous-Direct-Browser-Access"],
+		XStainlessLang:            claude.DefaultHeaders["X-Stainless-Lang"],
+		XStainlessPackageVersion:  claude.DefaultHeaders["X-Stainless-Package-Version"],
+		XStainlessOS:              claude.DefaultHeaders["X-Stainless-OS"],
+		XStainlessArch:            claude.DefaultHeaders["X-Stainless-Arch"],
+		XStainlessRuntime:         claude.DefaultHeaders["X-Stainless-Runtime"],
+		XStainlessRuntimeVersion:  claude.DefaultHeaders["X-Stainless-Runtime-Version"],
+		XStainlessRetryCount:      claude.DefaultHeaders["X-Stainless-Retry-Count"],
+		XStainlessTimeout:         claude.DefaultHeaders["X-Stainless-Timeout"],
+		TLSFingerprintProfileName: "Built-in Default (Node.js 24.x)",
+	}
+	if bodyAudit.MetadataUserIDProtectionPass {
+		values.MetadataUserID = metadataUserIDCandidate
+		values.DeviceID = deviceID
+		values.SessionID = sessionID
+	}
+	if req != nil {
+		values.XClaudeCodeSessionID = getHeaderRaw(req.Header, "X-Claude-Code-Session-Id")
+		values.XClientRequestID = getHeaderRaw(req.Header, "x-client-request-id")
+		values.UserAgent = getHeaderRaw(req.Header, "User-Agent")
+		values.Accept = getHeaderRaw(req.Header, "Accept")
+		values.XApp = getHeaderRaw(req.Header, "X-App")
+		values.DirectBrowserAccess = getHeaderRaw(req.Header, "Anthropic-Dangerous-Direct-Browser-Access")
+		values.XStainlessLang = getHeaderRaw(req.Header, "X-Stainless-Lang")
+		values.XStainlessPackageVersion = getHeaderRaw(req.Header, "X-Stainless-Package-Version")
+		values.XStainlessOS = getHeaderRaw(req.Header, "X-Stainless-OS")
+		values.XStainlessArch = getHeaderRaw(req.Header, "X-Stainless-Arch")
+		values.XStainlessRuntime = getHeaderRaw(req.Header, "X-Stainless-Runtime")
+		values.XStainlessRuntimeVersion = getHeaderRaw(req.Header, "X-Stainless-Runtime-Version")
+		values.XStainlessRetryCount = getHeaderRaw(req.Header, "X-Stainless-Retry-Count")
+		values.XStainlessTimeout = getHeaderRaw(req.Header, "X-Stainless-Timeout")
+	}
+	return values
+}
+
+// buildAnthropicTelemetryPrivacyRawValues 返回客户端入站请求里的原始遥测与指纹值。
+// 本函数必须在 IdentityService 指纹改写、metadata.user_id 改写和遥测隐私覆盖之前调用，
+// 否则日志会把中间态误判为客户端原始值。记录范围只限 Claude Code 遥测/指纹相关字段；
+// 认证 header、模型、消息正文和完整请求体不在这里读取，避免系统日志持有可直接滥用的业务数据。
+func buildAnthropicTelemetryPrivacyRawValues(body []byte, headers http.Header) anthropicTelemetryPrivacyRawValues {
+	values := anthropicTelemetryPrivacyRawValues{}
+	userIDResult := gjson.GetBytes(body, "metadata.user_id")
+	if userIDResult.Exists() {
+		values.MetadataUserID = strings.TrimSpace(userIDResult.String())
+		if userIDResult.Type != gjson.String {
+			values.MetadataUserID = strings.TrimSpace(userIDResult.Raw)
+		}
+		if parsed := ParseMetadataUserID(values.MetadataUserID); parsed != nil {
+			values.MetadataUserIDParsed = true
+			if parsed.IsNewFormat {
+				values.MetadataUserIDFormat = "json"
+			} else {
+				values.MetadataUserIDFormat = "legacy"
+			}
+			values.DeviceID = parsed.DeviceID
+			values.AccountUUID = parsed.AccountUUID
+			values.SessionID = parsed.SessionID
+		} else if values.MetadataUserID != "" {
+			values.MetadataUserIDFormat = "invalid"
+		}
+	}
+	if headers != nil {
+		values.XClaudeCodeSessionID = getHeaderRaw(headers, "X-Claude-Code-Session-Id")
+		values.XClientRequestID = getHeaderRaw(headers, "x-client-request-id")
+		values.UserAgent = getHeaderRaw(headers, "User-Agent")
+		values.Accept = getHeaderRaw(headers, "Accept")
+		values.XApp = getHeaderRaw(headers, "X-App")
+		values.DirectBrowserAccess = getHeaderRaw(headers, "Anthropic-Dangerous-Direct-Browser-Access")
+		values.XStainlessLang = getHeaderRaw(headers, "X-Stainless-Lang")
+		values.XStainlessPackageVersion = getHeaderRaw(headers, "X-Stainless-Package-Version")
+		values.XStainlessOS = getHeaderRaw(headers, "X-Stainless-OS")
+		values.XStainlessArch = getHeaderRaw(headers, "X-Stainless-Arch")
+		values.XStainlessRuntime = getHeaderRaw(headers, "X-Stainless-Runtime")
+		values.XStainlessRuntimeVersion = getHeaderRaw(headers, "X-Stainless-Runtime-Version")
+		values.XStainlessRetryCount = getHeaderRaw(headers, "X-Stainless-Retry-Count")
+		values.XStainlessTimeout = getHeaderRaw(headers, "X-Stainless-Timeout")
+	}
+	return values
+}
+
+// captureAnthropicTelemetryPrivacyRawValues 在真正的客户端入口处保存 raw_* 审计快照。
+// 主 /v1/messages、count_tokens 和 OpenAI 兼容入口在进入 mimicry、模型映射、cache_control 改写、
+// metadata 注入之前调用本函数；后续构建上游请求时只能复用该快照，避免把中间态误记为
+// “客户端原始值”。当 c 为 nil 时返回快照但无法缓存，调用方后续会退化为就地采集。
+func captureAnthropicTelemetryPrivacyRawValues(c *gin.Context, body []byte) anthropicTelemetryPrivacyRawValues {
+	headers := http.Header{}
+	if c != nil && c.Request != nil {
+		headers = c.Request.Header
+	}
+	values := buildAnthropicTelemetryPrivacyRawValues(body, headers)
+	if c != nil {
+		c.Set(telemetryPrivacyRawValuesKey, values)
+	}
+	return values
+}
+
+// resolveAnthropicTelemetryPrivacyRawValues 读取入口阶段保存的 raw_* 快照。
+// 直接单元测试可能绕过 Forward/ForwardCountTokens 调用 buildUpstreamRequest，此时上下文里没有快照；
+// 函数会退回到当前 body/header 采集，以保持旧调用方式可测。生产路径应始终命中入口快照。
+func resolveAnthropicTelemetryPrivacyRawValues(c *gin.Context, body []byte, headers http.Header) anthropicTelemetryPrivacyRawValues {
+	if c != nil {
+		if raw, ok := c.Get(telemetryPrivacyRawValuesKey); ok {
+			if values, ok := raw.(anthropicTelemetryPrivacyRawValues); ok {
+				return values
+			}
+		}
+	}
+	return buildAnthropicTelemetryPrivacyRawValues(body, headers)
+}
+
 // sanitizeAnthropicTelemetryPrivacyHeaders 在所有默认头、伪装头和 beta 头处理完成后调用。
 // 它会强制覆盖 Claude Code header 指纹，确保全局指纹统一关闭时也不会透传下游
 // User-Agent / x-stainless-* 差异；同时不触碰 authorization、anthropic-beta、模型、
@@ -1611,8 +1794,10 @@ func sanitizeAnthropicTelemetryPrivacyHeaders(req *http.Request, account *Accoun
 }
 
 // sanitizeAnthropicTelemetryPrivacyHeadersWithAudit 记录 header 保护是否真实落地。
-// 它只比较处理前后的状态并输出布尔结论，不记录 User-Agent、x-stainless-*、会话头、
-// x-client-request-id、authorization 或 anthropic-beta 的具体值，避免审计日志反向泄露指纹。
+// 它只比较处理前后的状态并输出布尔结论，不负责写具体 header 值；具体 raw/derived 值由
+// buildAnthropicTelemetryPrivacyRawValues 和 buildAnthropicTelemetryPrivacyDerivedValues 分阶段采集。
+// 这样 header 覆盖逻辑只关心“是否保护成功”，日志逻辑只关心“管理员需要看到什么审计值”，
+// 避免在同一个函数里混入改写、副作用和日志策略。
 func sanitizeAnthropicTelemetryPrivacyHeadersWithAudit(req *http.Request, account *Account, userID *ParsedUserID) (bool, anthropicTelemetryPrivacyHeaderAudit) {
 	audit := anthropicTelemetryPrivacyHeaderAudit{
 		Result:                 "未启用遥测隐私保护",
@@ -1630,34 +1815,33 @@ func sanitizeAnthropicTelemetryPrivacyHeadersWithAudit(req *http.Request, accoun
 	contentTypeBefore := getHeaderRaw(req.Header, "content-type")
 
 	protected, _ := applyAnthropicTelemetryPrivacyHeaderFingerprintWithAudit(req, &audit)
-	if sessionHeaderBefore := getHeaderRaw(req.Header, "X-Claude-Code-Session-Id"); sessionHeaderBefore != "" {
-		audit.SessionHeaderPresent = true
-		sessionID := ""
-		if userID != nil {
-			sessionID = userID.SessionID
-		}
-		if sessionID == "" {
-			sessionID = anthropicTelemetryPrivacySessionID(account)
-		}
-		setHeaderRaw(req.Header, "X-Claude-Code-Session-Id", sessionID)
-		audit.SessionHeaderChanged = getHeaderRaw(req.Header, "X-Claude-Code-Session-Id") != sessionHeaderBefore
-		audit.SessionHeaderFinalProtected = getHeaderRaw(req.Header, "X-Claude-Code-Session-Id") == sessionID
-		protected = true
+	sessionHeaderBefore := getHeaderRaw(req.Header, "X-Claude-Code-Session-Id")
+	audit.SessionHeaderPresent = sessionHeaderBefore != ""
+	sessionID := ""
+	if userID != nil {
+		sessionID = userID.SessionID
 	}
-	if requestIDBefore := getHeaderRaw(req.Header, "x-client-request-id"); requestIDBefore != "" {
-		audit.ClientRequestIDPresent = true
-		setHeaderRaw(req.Header, "x-client-request-id", uuid.NewString())
-		audit.ClientRequestIDRegenerated = getHeaderRaw(req.Header, "x-client-request-id") != "" &&
-			getHeaderRaw(req.Header, "x-client-request-id") != requestIDBefore
-		protected = true
+	if sessionID == "" {
+		sessionID = anthropicTelemetryPrivacySessionID(account)
 	}
+	setHeaderRaw(req.Header, "X-Claude-Code-Session-Id", sessionID)
+	audit.SessionHeaderChanged = getHeaderRaw(req.Header, "X-Claude-Code-Session-Id") != sessionHeaderBefore
+	audit.SessionHeaderFinalProtected = getHeaderRaw(req.Header, "X-Claude-Code-Session-Id") == sessionID
+	protected = true
+
+	requestIDBefore := getHeaderRaw(req.Header, "x-client-request-id")
+	audit.ClientRequestIDPresent = requestIDBefore != ""
+	setHeaderRaw(req.Header, "x-client-request-id", uuid.NewString())
+	audit.ClientRequestIDRegenerated = getHeaderRaw(req.Header, "x-client-request-id") != "" &&
+		getHeaderRaw(req.Header, "x-client-request-id") != requestIDBefore
+	protected = true
 
 	audit.AuthorizationPreserved = getHeaderRaw(req.Header, "authorization") == authorizationBefore
 	audit.AnthropicBetaPreserved = getHeaderRaw(req.Header, "anthropic-beta") == anthropicBetaBefore
 	audit.ContentTypePreserved = getHeaderRaw(req.Header, "content-type") == contentTypeBefore
 	audit.HeaderPrivacyProtectionPass = audit.HeaderFingerprintFinalDefault &&
-		(!audit.SessionHeaderPresent || audit.SessionHeaderFinalProtected) &&
-		(!audit.ClientRequestIDPresent || audit.ClientRequestIDRegenerated) &&
+		audit.SessionHeaderFinalProtected &&
+		audit.ClientRequestIDRegenerated &&
 		audit.AuthorizationPreserved &&
 		audit.AnthropicBetaPreserved &&
 		audit.ContentTypePreserved
@@ -1760,14 +1944,15 @@ func applyAnthropicTelemetryPrivacyHeaderFingerprintWithAudit(req *http.Request,
 // 任一维度的账号级隐私策略。即使请求本来没有 metadata.user_id、header 也已是默认值，
 // 只要 TLS 被强制收敛为官方默认指纹，也必须写入审计日志，便于管理员确认没有新增身份且
 // 账号仍以单一上游客户端形态出现。计数只按账号累加，不包含下游用户、原始会话、请求 ID、
-// 模型或正文内容；当 DeferredService 可用时走延迟批量写入，否则仅在仓储实现支持原子计数
-// 接口时同步写入，失败只记录日志不影响转发。
-func (s *GatewayService) recordAnthropicTelemetryPrivacyProtection(ctx context.Context, account *Account, req *http.Request, endpoint string, bodyAudit anthropicTelemetryPrivacyBodyAudit, headerAudit anthropicTelemetryPrivacyHeaderAudit, tlsAudit anthropicTelemetryPrivacyTLSAudit) {
+// 模型或正文内容；rawValues 只用于同一条管理员系统日志，不参与计数键或调度决策。
+// 当 DeferredService 可用时走延迟批量写入，否则仅在仓储实现支持原子计数接口时同步写入，
+// 失败只记录日志不影响转发。
+func (s *GatewayService) recordAnthropicTelemetryPrivacyProtection(ctx context.Context, account *Account, req *http.Request, endpoint string, bodyAudit anthropicTelemetryPrivacyBodyAudit, headerAudit anthropicTelemetryPrivacyHeaderAudit, tlsAudit anthropicTelemetryPrivacyTLSAudit, rawValues anthropicTelemetryPrivacyRawValues) {
 	protected := bodyAudit.Protected || headerAudit.Protected || tlsAudit.PrivacyProtectionPass
 	if !protected || account == nil || !account.IsTelemetryPrivacyEnabled() || account.ID <= 0 {
 		return
 	}
-	logAnthropicTelemetryPrivacyProtection(account, req, endpoint, bodyAudit, headerAudit, tlsAudit)
+	logAnthropicTelemetryPrivacyProtection(account, req, endpoint, bodyAudit, headerAudit, tlsAudit, rawValues)
 	if s != nil && s.deferredService != nil {
 		if _, ok := s.deferredService.accountRepo.(accountExtraCounterRepository); ok {
 			s.deferredService.ScheduleTelemetryPrivacyProtection(account.ID)
@@ -1789,12 +1974,11 @@ func (s *GatewayService) recordAnthropicTelemetryPrivacyProtection(ctx context.C
 }
 
 // logAnthropicTelemetryPrivacyProtection 写入可在“运维监控 / 系统日志”检索的审计日志。
-// 日志只记录本次保护的布尔校验、最终状态计数、策略名、端点、路径和账号 ID，不记录原始或
-// 改写后的 device_id、session_id、account_uuid、metadata.user_id、x-client-request-id，
-// 也不记录认证 token、模型或请求正文。这样管理员能判断保护是否真实成功，同时不会把遥测
-// 身份或业务内容重新落库造成二次隐私风险。新增字段必须继续遵守这个边界：能写“是否存在”
-// “是否已改写”“最终是否匹配默认值”和数量，不能写任何可反查客户端、账号或单次请求的具体值。
-func logAnthropicTelemetryPrivacyProtection(account *Account, req *http.Request, endpoint string, bodyAudit anthropicTelemetryPrivacyBodyAudit, headerAudit anthropicTelemetryPrivacyHeaderAudit, tlsAudit anthropicTelemetryPrivacyTLSAudit) {
+// 日志会记录两类值：raw_* 是客户端入站的 Claude Code 遥测/指纹原始值，derived_* 是最终
+// 发往 Anthropic 的账号级伪装值。这样管理员能直接核对保护是否真实覆盖，同时确认同一账号
+// 始终收敛到同一 device/session/header/TLS 指纹。日志仍禁止记录认证 token、模型、消息正文
+// 和完整请求体；这些字段不是遥测隐私判定所必需，写入系统日志会扩大本地泄露半径。
+func logAnthropicTelemetryPrivacyProtection(account *Account, req *http.Request, endpoint string, bodyAudit anthropicTelemetryPrivacyBodyAudit, headerAudit anthropicTelemetryPrivacyHeaderAudit, tlsAudit anthropicTelemetryPrivacyTLSAudit, rawValues anthropicTelemetryPrivacyRawValues) {
 	if account == nil {
 		return
 	}
@@ -1803,6 +1987,7 @@ func logAnthropicTelemetryPrivacyProtection(account *Account, req *http.Request,
 		path = req.URL.Path
 	}
 	bodyProtectionPass := anthropicTelemetryPrivacyBodyProtectionPass(bodyAudit)
+	derivedValues := buildAnthropicTelemetryPrivacyDerivedValues(account, req, bodyAudit)
 	logger.WriteSinkEvent("info", "service.gateway.audit.telemetry_privacy", "遥测隐私保护已处理", map[string]any{
 		"account_id":                            account.ID,
 		"account_type":                          account.Type,
@@ -1837,6 +2022,39 @@ func logAnthropicTelemetryPrivacyProtection(account *Account, req *http.Request,
 		"metadata_session_id_strategy":          "按账号编号派生单一稳定会话",
 		"metadata_user_id_version_pinned":       bodyAudit.MetadataUserIDVersionPinned,
 		"metadata_privacy_identity_unified":     bodyAudit.MetadataPrivacyIdentityUnified,
+		"raw_values_logged":                     true,
+		"raw_values_logged_scope":               "记录客户端入站 Claude Code 遥测与指纹字段，不记录认证值、模型或请求正文",
+		"raw_metadata_user_id":                  rawValues.MetadataUserID,
+		"raw_metadata_user_id_parsed":           rawValues.MetadataUserIDParsed,
+		"raw_metadata_user_id_format":           rawValues.MetadataUserIDFormat,
+		"raw_device_id":                         rawValues.DeviceID,
+		"raw_account_uuid":                      rawValues.AccountUUID,
+		"raw_session_id":                        rawValues.SessionID,
+		"raw_x_claude_code_session_id":          rawValues.XClaudeCodeSessionID,
+		"raw_x_client_request_id":               rawValues.XClientRequestID,
+		"raw_accept":                            rawValues.Accept,
+		"raw_user_agent":                        rawValues.UserAgent,
+		"raw_x_app":                             rawValues.XApp,
+		"raw_direct_browser_access":             rawValues.DirectBrowserAccess,
+		"raw_x_stainless_lang":                  rawValues.XStainlessLang,
+		"raw_x_stainless_package_version":       rawValues.XStainlessPackageVersion,
+		"raw_x_stainless_os":                    rawValues.XStainlessOS,
+		"raw_x_stainless_arch":                  rawValues.XStainlessArch,
+		"raw_x_stainless_runtime":               rawValues.XStainlessRuntime,
+		"raw_x_stainless_runtime_version":       rawValues.XStainlessRuntimeVersion,
+		"raw_x_stainless_retry_count":           rawValues.XStainlessRetryCount,
+		"raw_x_stainless_timeout":               rawValues.XStainlessTimeout,
+		"derived_values_logged":                 true,
+		"derived_values_logged_scope":           "记录最终发往上游的账号级伪装派生值",
+		"derived_metadata_user_id":              derivedValues.MetadataUserID,
+		"derived_metadata_user_id_candidate":    derivedValues.MetadataUserIDCandidate,
+		"derived_metadata_user_id_upstream":     derivedValues.MetadataUserIDUpstream,
+		"derived_device_id":                     derivedValues.DeviceID,
+		"derived_device_id_candidate":           derivedValues.DeviceIDCandidate,
+		"derived_account_uuid":                  derivedValues.AccountUUID,
+		"derived_account_uuid_candidate":        derivedValues.AccountUUIDCandidate,
+		"derived_session_id":                    derivedValues.SessionID,
+		"derived_session_id_candidate":          derivedValues.SessionIDCandidate,
 		"header_protected":                      headerAudit.Protected,
 		"header_result":                         headerAudit.Result,
 		"header_privacy_protection_pass":        headerAudit.HeaderPrivacyProtectionPass,
@@ -1862,10 +2080,24 @@ func logAnthropicTelemetryPrivacyProtection(account *Account, req *http.Request,
 		"x_claude_code_session_present":         headerAudit.SessionHeaderPresent,
 		"x_claude_code_session_changed":         headerAudit.SessionHeaderChanged,
 		"x_claude_code_session_final_protected": headerAudit.SessionHeaderFinalProtected,
+		"derived_x_claude_code_session_id":      derivedValues.XClaudeCodeSessionID,
 		"x_claude_code_session_strategy":        "沿用已保护会话或账号级稳定会话",
 		"x_client_request_id_present":           headerAudit.ClientRequestIDPresent,
 		"x_client_request_id_regenerated":       headerAudit.ClientRequestIDRegenerated,
+		"derived_x_client_request_id":           derivedValues.XClientRequestID,
 		"x_client_request_id_strategy":          "由中转服务重新生成单次请求编号",
+		"derived_accept":                        derivedValues.Accept,
+		"derived_user_agent":                    derivedValues.UserAgent,
+		"derived_x_app":                         derivedValues.XApp,
+		"derived_direct_browser_access":         derivedValues.DirectBrowserAccess,
+		"derived_x_stainless_lang":              derivedValues.XStainlessLang,
+		"derived_x_stainless_package_version":   derivedValues.XStainlessPackageVersion,
+		"derived_x_stainless_os":                derivedValues.XStainlessOS,
+		"derived_x_stainless_arch":              derivedValues.XStainlessArch,
+		"derived_x_stainless_runtime":           derivedValues.XStainlessRuntime,
+		"derived_x_stainless_runtime_version":   derivedValues.XStainlessRuntimeVersion,
+		"derived_x_stainless_retry_count":       derivedValues.XStainlessRetryCount,
+		"derived_x_stainless_timeout":           derivedValues.XStainlessTimeout,
 		"authorization_preserved":               headerAudit.AuthorizationPreserved,
 		"authorization_protected":               false,
 		"anthropic_beta_preserved":              headerAudit.AnthropicBetaPreserved,
@@ -1879,15 +2111,21 @@ func logAnthropicTelemetryPrivacyProtection(account *Account, req *http.Request,
 		"tls_custom_profile_suppressed":         tlsAudit.CustomProfileSuppressed,
 		"tls_fingerprint_result":                tlsAudit.Result,
 		"tls_fingerprint_strategy":              "强制使用内置官方客户端默认 TLS 指纹",
+		"derived_tls_fingerprint_profile":       derivedValues.TLSFingerprintProfileName,
 		"model_or_messages_body_protected":      false,
-		"sensitive_values_logged":               false,
-		"sensitive_values_logged_reason":        "仅记录布尔校验结果、计数与策略，不记录原始值或派生值",
-		"raw_device_id_logged":                  false,
-		"raw_session_id_logged":                 false,
-		"raw_account_uuid_logged":               false,
-		"raw_client_request_id_logged":          false,
-		"derived_device_id_logged":              false,
-		"derived_session_id_logged":             false,
+		"sensitive_values_logged":               true,
+		"sensitive_values_logged_reason":        "按管理员审计要求记录客户端原始遥测值和账号级伪装派生值，不记录认证值、模型或请求正文",
+		"raw_metadata_user_id_logged":           true,
+		"raw_header_fingerprint_logged":         true,
+		"raw_device_id_logged":                  true,
+		"raw_session_id_logged":                 true,
+		"raw_account_uuid_logged":               true,
+		"raw_client_request_id_logged":          true,
+		"derived_device_id_logged":              true,
+		"derived_session_id_logged":             true,
+		"derived_metadata_user_id_logged":       true,
+		"derived_header_fingerprint_logged":     true,
+		"derived_request_id_logged":             true,
 		"authorization_value_logged":            false,
 		"token_value_logged":                    false,
 		"model_value_logged":                    false,
@@ -4917,6 +5155,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 	if account != nil && account.IsTelemetryPrivacyEnabled() {
 		MarkOpsTelemetryPrivacySkipRequestBody(c)
+		captureAnthropicTelemetryPrivacyRawValues(c, parsed.Body)
 	}
 
 	if account != nil && account.IsBedrock() {
@@ -6539,6 +6778,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	if c != nil && c.Request != nil {
 		clientHeaders = c.Request.Header
 	}
+	telemetryPrivacyRawValues := resolveAnthropicTelemetryPrivacyRawValues(c, body, clientHeaders)
 
 	// OAuth账号：应用统一指纹和metadata重写（受设置开关控制）
 	var fingerprint *Fingerprint
@@ -6680,7 +6920,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	}
 	_, telemetryPrivacyHeaderAudit := sanitizeAnthropicTelemetryPrivacyHeadersWithAudit(req, account, telemetryPrivacyUserID)
 	_, telemetryPrivacyTLSAudit := anthropicTelemetryPrivacyTLSProfile(account)
-	s.recordAnthropicTelemetryPrivacyProtection(ctx, account, req, "messages", telemetryPrivacyBodyAudit, telemetryPrivacyHeaderAudit, telemetryPrivacyTLSAudit)
+	s.recordAnthropicTelemetryPrivacyProtection(ctx, account, req, "messages", telemetryPrivacyBodyAudit, telemetryPrivacyHeaderAudit, telemetryPrivacyTLSAudit, telemetryPrivacyRawValues)
 
 	// === DEBUG: 打印上游转发请求（headers + body 摘要），与 CLIENT_ORIGINAL 对比 ===
 	s.debugLogGatewaySnapshot("UPSTREAM_FORWARD", req.Header, body, map[string]string{
@@ -9366,6 +9606,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 
 	if account != nil && account.IsTelemetryPrivacyEnabled() {
 		MarkOpsTelemetryPrivacySkipRequestBody(c)
+		captureAnthropicTelemetryPrivacyRawValues(c, parsed.Body)
 	}
 
 	// Bedrock 不支持 count_tokens 端点
@@ -9738,6 +9979,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	if c != nil && c.Request != nil {
 		clientHeaders = c.Request.Header
 	}
+	ctTelemetryPrivacyRawValues := resolveAnthropicTelemetryPrivacyRawValues(c, body, clientHeaders)
 
 	// OAuth 账号：应用统一指纹和重写 userID（受设置开关控制）
 	// 如果启用了会话ID伪装，会在重写后替换 session 部分为固定值
@@ -9858,7 +10100,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	}
 	_, ctTelemetryPrivacyHeaderAudit := sanitizeAnthropicTelemetryPrivacyHeadersWithAudit(req, account, ctTelemetryPrivacyUserID)
 	_, ctTelemetryPrivacyTLSAudit := anthropicTelemetryPrivacyTLSProfile(account)
-	s.recordAnthropicTelemetryPrivacyProtection(ctx, account, req, "count_tokens", ctTelemetryPrivacyBodyAudit, ctTelemetryPrivacyHeaderAudit, ctTelemetryPrivacyTLSAudit)
+	s.recordAnthropicTelemetryPrivacyProtection(ctx, account, req, "count_tokens", ctTelemetryPrivacyBodyAudit, ctTelemetryPrivacyHeaderAudit, ctTelemetryPrivacyTLSAudit, ctTelemetryPrivacyRawValues)
 
 	if c != nil && tokenType == "oauth" {
 		c.Set(claudeMimicDebugInfoKey, buildClaudeMimicDebugLine(req, body, account, tokenType, mimicClaudeCode))

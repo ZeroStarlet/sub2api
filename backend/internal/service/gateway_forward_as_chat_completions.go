@@ -34,6 +34,10 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	parsed *ParsedRequest,
 ) (*ForwardResult, error) {
 	startTime := time.Now()
+	if account != nil && account.IsTelemetryPrivacyEnabled() {
+		MarkOpsTelemetryPrivacySkipRequestBody(c)
+		captureAnthropicTelemetryPrivacyRawValues(c, body)
+	}
 
 	// 1. Parse Chat Completions request
 	var ccReq apicompat.ChatCompletionsRequest
