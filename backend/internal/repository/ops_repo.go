@@ -1222,6 +1222,180 @@ LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + itoa(len(args)+2)
 	}, nil
 }
 
+func (r *opsRepository) GetTelemetryPrivacyStats(ctx context.Context, filter *service.OpsTelemetryPrivacyStatsFilter) (*service.OpsTelemetryPrivacyStats, error) {
+	if r == nil || r.db == nil {
+		return nil, fmt.Errorf("nil ops repository")
+	}
+	if filter == nil || filter.AccountID <= 0 {
+		return nil, fmt.Errorf("invalid telemetry privacy stats filter")
+	}
+
+	stats := &service.OpsTelemetryPrivacyStats{
+		AccountID: filter.AccountID,
+		StartTime: filter.StartTime.UTC(),
+		EndTime:   filter.EndTime.UTC(),
+	}
+	const aggregateSQL = `
+SELECT
+  COUNT(*)::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'protection_success' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE COALESCE(l.extra->>'protection_success','false') <> 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'body_protected' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'body_privacy_protection_pass' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'body_rewritten' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'metadata_user_id_present' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'metadata_user_id_absent_safe' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'header_protected' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'header_privacy_protection_pass' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'header_fingerprint_final_default' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'user_agent_final_default' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'x_stainless_final_default' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'x_app_final_default' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'direct_browser_access_final_default' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'tls_privacy_protection_pass' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'tls_fingerprint_final_default' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'x_client_request_id_regenerated' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'x_claude_code_session_final_protected' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'raw_values_logged' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'derived_values_logged' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'authorization_value_logged' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'token_value_logged' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'model_value_logged' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'request_body_logged' = 'true')::bigint,
+  COUNT(DISTINCT NULLIF(l.extra->>'raw_device_id',''))::bigint,
+  COUNT(DISTINCT NULLIF(l.extra->>'raw_session_id',''))::bigint,
+  COUNT(DISTINCT NULLIF(l.extra->>'raw_x_client_request_id',''))::bigint,
+  COUNT(DISTINCT NULLIF(l.extra->>'derived_device_id',''))::bigint,
+  COUNT(DISTINCT NULLIF(l.extra->>'derived_session_id',''))::bigint,
+  COUNT(DISTINCT NULLIF(l.extra->>'derived_x_client_request_id',''))::bigint
+FROM ops_system_logs l
+WHERE l.component = 'service.gateway.audit.telemetry_privacy'
+  AND l.account_id = $1
+  AND l.platform = 'anthropic'
+  AND l.created_at >= $2
+  AND l.created_at < $3`
+	if err := r.db.QueryRowContext(ctx, aggregateSQL, filter.AccountID, filter.StartTime.UTC(), filter.EndTime.UTC()).Scan(
+		&stats.Total,
+		&stats.SuccessCount,
+		&stats.FailureCount,
+		&stats.BodyProtectedCount,
+		&stats.BodyPassCount,
+		&stats.BodyRewrittenCount,
+		&stats.MetadataPresentCount,
+		&stats.MetadataAbsentSafeCount,
+		&stats.HeaderProtectedCount,
+		&stats.HeaderPassCount,
+		&stats.HeaderFingerprintDefaultCount,
+		&stats.UserAgentDefaultCount,
+		&stats.XStainlessDefaultCount,
+		&stats.XAppDefaultCount,
+		&stats.DirectBrowserAccessDefaultCount,
+		&stats.TLSPassCount,
+		&stats.TLSDefaultCount,
+		&stats.ClientRequestIDResetCount,
+		&stats.SessionHeaderProtectedCount,
+		&stats.RawValuesLoggedCount,
+		&stats.DerivedValuesLoggedCount,
+		&stats.AuthorizationValueLoggedCount,
+		&stats.TokenValueLoggedCount,
+		&stats.ModelValueLoggedCount,
+		&stats.RequestBodyLoggedCount,
+		&stats.UniqueRawDeviceIDCount,
+		&stats.UniqueRawSessionIDCount,
+		&stats.UniqueRawClientRequestIDCount,
+		&stats.UniqueDerivedDeviceIDCount,
+		&stats.UniqueDerivedSessionIDCount,
+		&stats.UniqueDerivedClientRequestIDCount,
+	); err != nil {
+		return nil, err
+	}
+
+	endpointItems, err := r.listTelemetryPrivacyStatsBreakdown(ctx, filter, "endpoint")
+	if err != nil {
+		return nil, err
+	}
+	resultItems, err := r.listTelemetryPrivacyStatsBreakdown(ctx, filter, "body_result")
+	if err != nil {
+		return nil, err
+	}
+	stats.EndpointBreakdown = endpointItems
+	stats.ResultBreakdown = resultItems
+	return stats, nil
+}
+
+func (r *opsRepository) listTelemetryPrivacyStatsBreakdown(ctx context.Context, filter *service.OpsTelemetryPrivacyStatsFilter, extraKey string) ([]service.OpsTelemetryPrivacyStatsBreakdownItem, error) {
+	query := `
+SELECT COALESCE(NULLIF(l.extra->>$4, ''), '-') AS k, COUNT(*)::bigint
+FROM ops_system_logs l
+WHERE l.component = 'service.gateway.audit.telemetry_privacy'
+  AND l.account_id = $1
+  AND l.platform = 'anthropic'
+  AND l.created_at >= $2
+  AND l.created_at < $3
+GROUP BY k
+ORDER BY COUNT(*) DESC, k ASC
+LIMIT 20`
+	rows, err := r.db.QueryContext(ctx, query, filter.AccountID, filter.StartTime.UTC(), filter.EndTime.UTC(), extraKey)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	items := make([]service.OpsTelemetryPrivacyStatsBreakdownItem, 0, 8)
+	var otherBodyResultCount int64
+	for rows.Next() {
+		item := service.OpsTelemetryPrivacyStatsBreakdownItem{}
+		if err := rows.Scan(&item.Key, &item.Count); err != nil {
+			return nil, err
+		}
+		item.Label = telemetryPrivacyStatsBreakdownLabel(extraKey, item.Key)
+		if extraKey == "body_result" && item.Label == "其他处理结果" {
+			otherBodyResultCount += item.Count
+			continue
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if otherBodyResultCount > 0 {
+		items = append(items, service.OpsTelemetryPrivacyStatsBreakdownItem{
+			Key:   "other",
+			Label: "其他处理结果",
+			Count: otherBodyResultCount,
+		})
+	}
+	return items, nil
+}
+
+func telemetryPrivacyStatsBreakdownLabel(extraKey string, key string) string {
+	switch extraKey {
+	case "endpoint":
+		switch key {
+		case "messages":
+			return "消息创建"
+		case "count_tokens":
+			return "令牌计数"
+		}
+	case "body_result":
+		switch key {
+		case "metadata.user_id 已替换为账号级匿名遥测身份",
+			"metadata.user_id 缺失，未新增遥测身份",
+			"metadata.user_id 格式异常，已替换为账号级匿名遥测身份",
+			"metadata.user_id 非字符串，已替换为账号级匿名遥测身份",
+			"metadata.user_id 已处于保护状态",
+			"metadata.user_id 写入失败",
+			"metadata.user_id 替换后校验未通过":
+			return key
+		}
+		return "其他处理结果"
+	}
+	if strings.TrimSpace(key) == "" || key == "-" {
+		return "-"
+	}
+	return key
+}
+
 func (r *opsRepository) DeleteSystemLogs(ctx context.Context, filter *service.OpsSystemLogCleanupFilter) (int64, error) {
 	if r == nil || r.db == nil {
 		return 0, fmt.Errorf("nil ops repository")

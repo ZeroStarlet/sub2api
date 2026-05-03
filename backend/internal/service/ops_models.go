@@ -17,6 +17,53 @@ type OpsSystemLog struct {
 	Extra           map[string]any `json:"extra,omitempty"`
 }
 
+type OpsTelemetryPrivacyStatsBreakdownItem struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Count int64  `json:"count"`
+}
+
+type OpsTelemetryPrivacyStats struct {
+	AccountID int64     `json:"account_id"`
+	StartTime time.Time `json:"start_time"`
+	EndTime   time.Time `json:"end_time"`
+
+	Total                             int64 `json:"total"`
+	SuccessCount                      int64 `json:"success_count"`
+	FailureCount                      int64 `json:"failure_count"`
+	BodyProtectedCount                int64 `json:"body_protected_count"`
+	BodyPassCount                     int64 `json:"body_pass_count"`
+	BodyRewrittenCount                int64 `json:"body_rewritten_count"`
+	MetadataPresentCount              int64 `json:"metadata_present_count"`
+	MetadataAbsentSafeCount           int64 `json:"metadata_absent_safe_count"`
+	HeaderProtectedCount              int64 `json:"header_protected_count"`
+	HeaderPassCount                   int64 `json:"header_pass_count"`
+	HeaderFingerprintDefaultCount     int64 `json:"header_fingerprint_default_count"`
+	UserAgentDefaultCount             int64 `json:"user_agent_default_count"`
+	XStainlessDefaultCount            int64 `json:"x_stainless_default_count"`
+	XAppDefaultCount                  int64 `json:"x_app_default_count"`
+	DirectBrowserAccessDefaultCount   int64 `json:"direct_browser_access_default_count"`
+	TLSPassCount                      int64 `json:"tls_pass_count"`
+	TLSDefaultCount                   int64 `json:"tls_default_count"`
+	ClientRequestIDResetCount         int64 `json:"client_request_id_reset_count"`
+	SessionHeaderProtectedCount       int64 `json:"session_header_protected_count"`
+	RawValuesLoggedCount              int64 `json:"raw_values_logged_count"`
+	DerivedValuesLoggedCount          int64 `json:"derived_values_logged_count"`
+	AuthorizationValueLoggedCount     int64 `json:"authorization_value_logged_count"`
+	TokenValueLoggedCount             int64 `json:"token_value_logged_count"`
+	ModelValueLoggedCount             int64 `json:"model_value_logged_count"`
+	RequestBodyLoggedCount            int64 `json:"request_body_logged_count"`
+	UniqueRawDeviceIDCount            int64 `json:"unique_raw_device_id_count"`
+	UniqueRawSessionIDCount           int64 `json:"unique_raw_session_id_count"`
+	UniqueRawClientRequestIDCount     int64 `json:"unique_raw_client_request_id_count"`
+	UniqueDerivedDeviceIDCount        int64 `json:"unique_derived_device_id_count"`
+	UniqueDerivedSessionIDCount       int64 `json:"unique_derived_session_id_count"`
+	UniqueDerivedClientRequestIDCount int64 `json:"unique_derived_client_request_id_count"`
+
+	EndpointBreakdown []OpsTelemetryPrivacyStatsBreakdownItem `json:"endpoint_breakdown"`
+	ResultBreakdown   []OpsTelemetryPrivacyStatsBreakdownItem `json:"result_breakdown"`
+}
+
 type OpsErrorLog struct {
 	ID        int64     `json:"id"`
 	CreatedAt time.Time `json:"created_at"`

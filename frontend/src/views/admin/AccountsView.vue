@@ -206,6 +206,16 @@
                 <Icon name="shield" size="xs" :stroke-width="2" />
                 {{ t('admin.accounts.telemetryPrivacyProtectedShort', { count: getTelemetryPrivacyProtectedCount(row) }) }}
               </span>
+              <button
+                v-if="isTelemetryPrivacyVisible(row)"
+                type="button"
+                class="inline-flex items-center gap-1 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 hover:bg-blue-200 dark:bg-blue-900/35 dark:text-blue-300 dark:hover:bg-blue-900/55"
+                :title="t('admin.accounts.telemetryPrivacyStatsTitle')"
+                @click.stop="handleTelemetryPrivacyStats(row)"
+              >
+                <Icon name="chart" size="xs" :stroke-width="2" />
+                {{ t('admin.accounts.telemetryPrivacyStatsShort') }}
+              </button>
               <a
                 v-if="isTelemetryPrivacyVisible(row)"
                 :href="getTelemetryPrivacyLogURL(row)"
@@ -326,6 +336,7 @@
     <ReAuthAccountModal :show="showReAuth" :account="reAuthAcc" @close="closeReAuthModal" @reauthorized="handleAccountUpdated" />
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
+    <TelemetryPrivacyStatsModal :show="showTelemetryPrivacyStats" :account="telemetryPrivacyStatsAcc" @close="closeTelemetryPrivacyStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
     <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
@@ -378,7 +389,7 @@ import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
-import { CreateAccountModal, EditAccountModal, BulkEditAccountModal, SyncFromCrsModal, TempUnschedStatusModal } from '@/components/account'
+import { CreateAccountModal, EditAccountModal, BulkEditAccountModal, SyncFromCrsModal, TempUnschedStatusModal, TelemetryPrivacyStatsModal } from '@/components/account'
 import AccountTableActions from '@/components/admin/account/AccountTableActions.vue'
 import AccountTableFilters from '@/components/admin/account/AccountTableFilters.vue'
 import AccountBulkActionsBar from '@/components/admin/account/AccountBulkActionsBar.vue'
@@ -464,6 +475,7 @@ const showDeleteDialog = ref(false)
 const showReAuth = ref(false)
 const showTest = ref(false)
 const showStats = ref(false)
+const showTelemetryPrivacyStats = ref(false)
 const showErrorPassthrough = ref(false)
 const showTLSFingerprintProfiles = ref(false)
 const edAcc = ref<Account | null>(null)
@@ -472,6 +484,7 @@ const deletingAcc = ref<Account | null>(null)
 const reAuthAcc = ref<Account | null>(null)
 const testingAcc = ref<Account | null>(null)
 const statsAcc = ref<Account | null>(null)
+const telemetryPrivacyStatsAcc = ref<Account | null>(null)
 const showSchedulePanel = ref(false)
 const scheduleAcc = ref<Account | null>(null)
 const scheduleModelOptions = ref<SelectOption[]>([])
@@ -841,6 +854,7 @@ const isAnyModalOpen = computed(() => {
     showReAuth.value ||
     showTest.value ||
     showStats.value ||
+    showTelemetryPrivacyStats.value ||
     showSchedulePanel.value ||
     showErrorPassthrough.value
   )
@@ -1508,9 +1522,11 @@ const handleExportData = async () => {
 }
 const closeTestModal = () => { showTest.value = false; testingAcc.value = null }
 const closeStatsModal = () => { showStats.value = false; statsAcc.value = null }
+const closeTelemetryPrivacyStatsModal = () => { showTelemetryPrivacyStats.value = false; telemetryPrivacyStatsAcc.value = null }
 const closeReAuthModal = () => { showReAuth.value = false; reAuthAcc.value = null }
 const handleTest = (a: Account) => { testingAcc.value = a; showTest.value = true }
 const handleViewStats = (a: Account) => { statsAcc.value = a; showStats.value = true }
+const handleTelemetryPrivacyStats = (a: Account) => { telemetryPrivacyStatsAcc.value = a; showTelemetryPrivacyStats.value = true }
 const handleSchedule = async (a: Account) => {
   scheduleAcc.value = a
   scheduleModelOptions.value = []

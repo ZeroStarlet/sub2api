@@ -11,6 +11,7 @@ type opsRepoMock struct {
 	BatchInsertErrorLogsFn        func(ctx context.Context, inputs []*OpsInsertErrorLogInput) (int64, error)
 	BatchInsertSystemLogsFn       func(ctx context.Context, inputs []*OpsInsertSystemLogInput) (int64, error)
 	ListSystemLogsFn              func(ctx context.Context, filter *OpsSystemLogFilter) (*OpsSystemLogList, error)
+	GetTelemetryPrivacyStatsFn    func(ctx context.Context, filter *OpsTelemetryPrivacyStatsFilter) (*OpsTelemetryPrivacyStats, error)
 	DeleteSystemLogsFn            func(ctx context.Context, filter *OpsSystemLogCleanupFilter) (int64, error)
 	InsertSystemLogCleanupAuditFn func(ctx context.Context, input *OpsSystemLogCleanupAudit) error
 }
@@ -53,6 +54,13 @@ func (m *opsRepoMock) ListSystemLogs(ctx context.Context, filter *OpsSystemLogFi
 		return m.ListSystemLogsFn(ctx, filter)
 	}
 	return &OpsSystemLogList{Logs: []*OpsSystemLog{}, Total: 0, Page: 1, PageSize: 50}, nil
+}
+
+func (m *opsRepoMock) GetTelemetryPrivacyStats(ctx context.Context, filter *OpsTelemetryPrivacyStatsFilter) (*OpsTelemetryPrivacyStats, error) {
+	if m.GetTelemetryPrivacyStatsFn != nil {
+		return m.GetTelemetryPrivacyStatsFn(ctx, filter)
+	}
+	return &OpsTelemetryPrivacyStats{}, nil
 }
 
 func (m *opsRepoMock) DeleteSystemLogs(ctx context.Context, filter *OpsSystemLogCleanupFilter) (int64, error) {

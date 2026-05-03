@@ -31,6 +31,7 @@ func newOpsSystemLogTestRouter(handler *OpsHandler, withUser bool) *gin.Engine {
 	r.GET("/logs", handler.ListSystemLogs)
 	r.POST("/logs/cleanup", handler.CleanupSystemLogs)
 	r.GET("/logs/health", handler.GetSystemLogIngestionHealth)
+	r.GET("/telemetry-privacy/stats", handler.GetTelemetryPrivacyStats)
 	return r
 }
 
@@ -105,6 +106,56 @@ func TestOpsSystemLogHandler_ListSuccess(t *testing.T) {
 	}
 	if resp.Code != 0 {
 		t.Fatalf("unexpected response code: %+v", resp)
+	}
+}
+
+func TestOpsSystemLogHandler_TelemetryPrivacyStatsInvalidAccountID(t *testing.T) {
+	svc := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	h := NewOpsHandler(svc)
+	r := newOpsSystemLogTestRouter(h, false)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/telemetry-privacy/stats?account_id=abc", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", w.Code)
+	}
+}
+
+func TestOpsSystemLogHandler_TelemetryPrivacyStatsInvalidTimeRange(t *testing.T) {
+	svc := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	h := NewOpsHandler(svc)
+	r := newOpsSystemLogTestRouter(h, false)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/telemetry-privacy/stats?account_id=4&time_range=bad", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", w.Code)
+	}
+}
+
+func TestOpsSystemLogHandler_TelemetryPrivacyStatsSuccess(t *testing.T) {
+	svc := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	h := NewOpsHandler(svc)
+	r := newOpsSystemLogTestRouter(h, false)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/telemetry-privacy/stats?account_id=4&time_range=24h", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200", w.Code)
+	}
+
+	var resp responseEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Code != 0 {
+		t.Fatalf("unexpected response code: %+v", resp)
+	}
+	if !bytes.Contains(resp.Data, []byte(`"account_id":4`)) {
+		t.Fatalf("response should include account_id=4: %s", string(resp.Data))
 	}
 }
 

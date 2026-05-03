@@ -79,7 +79,7 @@ describe('OpsSystemLogTable', () => {
     })
   })
 
-  it('遥测隐私系统日志展示客户端原始值和上游派生值', async () => {
+  it('遥测隐私系统日志优先展示处理摘要并隐藏冗长审计值', async () => {
     mockListSystemLogs.mockResolvedValue({
       items: [
         {
@@ -112,6 +112,10 @@ describe('OpsSystemLogTable', () => {
             metadata_user_id_parsed: true,
             metadata_user_id_format: 'json',
             header_protected: true,
+            header_privacy_protection_pass: true,
+            tls_privacy_protection_pass: true,
+            x_client_request_id_regenerated: true,
+            x_claude_code_session_final_protected: true,
             sensitive_values_logged: true,
             sensitive_values_logged_reason: '按管理员审计要求记录客户端原始遥测值和账号级伪装派生值，不记录认证值、模型或请求正文',
             raw_metadata_user_id: '{"device_id":"raw-device-001","account_uuid":"raw-account-001","session_id":"raw-session-001"}',
@@ -125,6 +129,7 @@ describe('OpsSystemLogTable', () => {
             raw_user_agent: 'claude-cli/2.1.92 (external, cli)',
             raw_x_stainless_os: 'Linux',
             raw_x_stainless_arch: 'arm64',
+            raw_values_logged: true,
             authorization: 'Bearer authorization-should-not-display',
             token_value: 'token-should-not-display',
             request_body: '{"messages":[{"role":"user","content":"body-should-not-display"}]}',
@@ -143,6 +148,7 @@ describe('OpsSystemLogTable', () => {
             derived_x_stainless_os: 'MacOS',
             derived_x_stainless_arch: 'x64',
             derived_tls_fingerprint_profile: 'Built-in Default (Node.js 24.x)',
+            derived_values_logged: true,
             raw_device_id_logged: true,
             raw_session_id_logged: true,
             raw_account_uuid_logged: true,
@@ -172,15 +178,16 @@ describe('OpsSystemLogTable', () => {
     await flushPromises()
 
     const text = wrapper.text()
-    expect(text).toContain('原始device_id值=raw-device-001')
-    expect(text).toContain('原始session_id值=raw-session-001')
-    expect(text).toContain('原始x-client-request-id值=raw-client-request-001')
-    expect(text).toContain('派生device_id上游值=derived-device-004')
-    expect(text).toContain('派生session_id上游值=derived-session-004')
-    expect(text).toContain('派生x-client-request-id值=derived-client-request-001')
-    expect(text).toContain('派生TLS指纹配置=Built-in Default (Node.js 24.x)')
-    expect(text).toContain('token记录=否')
-    expect(text).toContain('请求正文记录=否')
+    expect(text).toContain('遥测隐私=已处理')
+    expect(text).toContain('端点=消息创建')
+    expect(text).toContain('总体=通过')
+    expect(text).toContain('正文=通过')
+    expect(text).toContain('header=通过')
+    expect(text).toContain('metadata结果=metadata.user_id 已替换为账号级匿名遥测身份')
+    expect(text).toContain('敏感边界=认证=否/token=否/模型=否/正文=否')
+    expect(text).not.toContain('原始device_id值=raw-device-001')
+    expect(text).not.toContain('派生device_id上游值=derived-device-004')
+    expect(text).not.toContain('派生TLS指纹配置=Built-in Default (Node.js 24.x)')
     expect(text).not.toContain('authorization-should-not-display')
     expect(text).not.toContain('token-should-not-display')
     expect(text).not.toContain('body-should-not-display')

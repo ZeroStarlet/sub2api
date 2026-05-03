@@ -931,6 +931,58 @@ export interface OpsSystemLogSinkHealth {
   last_error?: string
 }
 
+export interface OpsTelemetryPrivacyStatsBreakdownItem {
+  key: string
+  label: string
+  count: number
+}
+
+export interface OpsTelemetryPrivacyStatsResponse {
+  account_id: number
+  start_time: string
+  end_time: string
+  total: number
+  success_count: number
+  failure_count: number
+  body_protected_count: number
+  body_pass_count: number
+  body_rewritten_count: number
+  metadata_present_count: number
+  metadata_absent_safe_count: number
+  header_protected_count: number
+  header_pass_count: number
+  header_fingerprint_default_count: number
+  user_agent_default_count: number
+  x_stainless_default_count: number
+  x_app_default_count: number
+  direct_browser_access_default_count: number
+  tls_pass_count: number
+  tls_default_count: number
+  client_request_id_reset_count: number
+  session_header_protected_count: number
+  raw_values_logged_count: number
+  derived_values_logged_count: number
+  authorization_value_logged_count: number
+  token_value_logged_count: number
+  model_value_logged_count: number
+  request_body_logged_count: number
+  unique_raw_device_id_count: number
+  unique_raw_session_id_count: number
+  unique_raw_client_request_id_count: number
+  unique_derived_device_id_count: number
+  unique_derived_session_id_count: number
+  unique_derived_client_request_id_count: number
+  endpoint_breakdown: OpsTelemetryPrivacyStatsBreakdownItem[]
+  result_breakdown: OpsTelemetryPrivacyStatsBreakdownItem[]
+}
+
+export interface OpsTelemetryPrivacyStatsQuery {
+  account_id: number
+  time_range?: '5m' | '30m' | '1h' | '6h' | '24h' | '7d' | '30d'
+  start_time?: string
+  end_time?: string
+}
+
 export interface OpsErrorLog {
   id: number
   created_at: string
@@ -1341,6 +1393,11 @@ export async function getSystemLogSinkHealth(): Promise<OpsSystemLogSinkHealth> 
   return data
 }
 
+export async function getTelemetryPrivacyStats(params: OpsTelemetryPrivacyStatsQuery): Promise<OpsTelemetryPrivacyStatsResponse> {
+  const { data } = await apiClient.get<OpsTelemetryPrivacyStatsResponse>('/admin/ops/telemetry-privacy/stats', { params })
+  return data
+}
+
 // Advanced settings (DB-backed)
 export async function getAdvancedSettings(): Promise<OpsAdvancedSettings> {
   const { data } = await apiClient.get<OpsAdvancedSettings>('/admin/ops/advanced-settings')
@@ -1418,7 +1475,8 @@ export const opsAPI = {
   updateMetricThresholds,
   listSystemLogs,
   cleanupSystemLogs,
-  getSystemLogSinkHealth
+  getSystemLogSinkHealth,
+  getTelemetryPrivacyStats
 }
 
 export default opsAPI

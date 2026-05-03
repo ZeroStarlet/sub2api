@@ -138,14 +138,52 @@ const formatTelemetryPrivacyEndpoint = (endpoint: string) => {
   return endpoint || '-'
 }
 
-const pushExtraStringField = (parts: string[], extra: Record<string, any> | undefined, label: string, key: string) => {
-  const value = getExtraString(extra, key)
-  parts.push(`${label}=${value || '-'}`)
+const formatTelemetryPrivacyCheck = (
+  extra: Record<string, any> | undefined,
+  passKey: string,
+  fallbackKey?: string
+) => {
+  const pass = getExtraPassLabel(extra, passKey)
+  if (pass) return pass
+  if (!fallbackKey) return '-'
+  return getExtraBoolLabel(extra, fallbackKey) || '-'
 }
 
-const pushExtraBoolField = (parts: string[], extra: Record<string, any> | undefined, label: string, key: string) => {
-  const value = getExtraBoolLabel(extra, key)
-  parts.push(`${label}=${value || '否'}`)
+const formatTelemetryPrivacyBoundary = (extra: Record<string, any> | undefined) => {
+  const values = [
+    `认证=${getExtraBoolLabel(extra, 'authorization_value_logged') || '否'}`,
+    `token=${getExtraBoolLabel(extra, 'token_value_logged') || '否'}`,
+    `模型=${getExtraBoolLabel(extra, 'model_value_logged') || '否'}`,
+    `正文=${getExtraBoolLabel(extra, 'request_body_logged') || '否'}`
+  ]
+  return values.join('/')
+}
+
+// 遥测隐私审计日志的 extra 保留完整字段用于统计弹窗和管理员深查；列表行只展示判定摘要、
+// 关键处理结论和敏感边界，避免高频日志把上百个 key=value 全部铺开导致无法快速判断成败。
+const formatTelemetryPrivacyLogSummary = (row: OpsSystemLog) => {
+  const extra = row.extra || {}
+  const bodyResult = getExtraString(extra, 'body_result') || '-'
+  const summaryParts = [
+    '遥测隐私=已处理',
+    `端点=${formatTelemetryPrivacyEndpoint(getExtraString(extra, 'endpoint'))}`,
+    `path=${getExtraString(extra, 'path') || '-'}`,
+    `总体=${getExtraPassLabel(extra, 'protection_success') || '-'}`,
+    `正文=${formatTelemetryPrivacyCheck(extra, 'body_privacy_protection_pass', 'body_protected')}`,
+    `改写=${getExtraBoolLabel(extra, 'body_rewritten') || '否'}`,
+    `header=${formatTelemetryPrivacyCheck(extra, 'header_privacy_protection_pass', 'header_protected')}`,
+    `TLS=${formatTelemetryPrivacyCheck(extra, 'tls_privacy_protection_pass', 'tls_fingerprint_final_default')}`,
+    `请求ID=${getExtraBoolLabel(extra, 'x_client_request_id_regenerated') || '否'}`,
+    `会话头=${getExtraBoolLabel(extra, 'x_claude_code_session_final_protected') || '否'}`,
+    `metadata存在=${getExtraBoolLabel(extra, 'metadata_user_id_present') || '否'}`,
+    `metadata结果=${bodyResult}`,
+    `原始字段=${getExtraBoolLabel(extra, 'raw_values_logged') || '否'}`,
+    `派生字段=${getExtraBoolLabel(extra, 'derived_values_logged') || '否'}`,
+    `敏感边界=${formatTelemetryPrivacyBoundary(extra)}`
+  ]
+  if (row.account_id != null) summaryParts.push(`acc=${row.account_id}`)
+  if (row.platform) summaryParts.push(`platform=${row.platform}`)
+  return summaryParts.join(' ')
 }
 
 const formatSystemLogDetail = (row: OpsSystemLog) => {
@@ -171,134 +209,10 @@ const formatSystemLogDetail = (row: OpsSystemLog) => {
   if (accessParts.length > 0) parts.push(accessParts.join(' '))
 
   const isTelemetryPrivacyLog = extra.telemetry_privacy === true || extra.telemetry_privacy === 'true'
-  // 管理员排查遥测隐私保护时需要同时核对客户端原始指纹和上游最终伪装值；这里仅拼接
-  // 遥测与指纹审计字段，仍不展示认证值、模型名或请求正文，避免把业务内容混入系统日志详情。
   if (isTelemetryPrivacyLog) {
-    const privacyParts: string[] = []
-    privacyParts.push('遥测隐私=已处理')
-    privacyParts.push(`端点=${formatTelemetryPrivacyEndpoint(getExtraString(extra, 'endpoint'))}`)
-    privacyParts.push(`请求路径=${getExtraString(extra, 'path') || '-'}`)
-    privacyParts.push(`保护范围=${getExtraString(extra, 'privacy_scope') || '-'}`)
-    privacyParts.push(`总体校验=${getExtraPassLabel(extra, 'protection_success') || '-'}`)
-    privacyParts.push(`请求正文处理=${getExtraBoolLabel(extra, 'body_protected') || '否'}`)
-    privacyParts.push(`请求正文隐私校验=${getExtraPassLabel(extra, 'body_privacy_protection_pass') || '-'}`)
-    privacyParts.push(`请求正文改写=${getExtraBoolLabel(extra, 'body_rewritten') || '否'}`)
-    privacyParts.push(`请求正文结果=${getExtraString(extra, 'body_result') || '-'}`)
-    privacyParts.push(`metadata.user_id存在=${getExtraBoolLabel(extra, 'metadata_user_id_present') || '否'}`)
-    privacyParts.push(`metadata.user_id缺失安全=${getExtraBoolLabel(extra, 'metadata_user_id_absent_safe') || '否'}`)
-    privacyParts.push(`metadata.user_id缺失策略=${getExtraString(extra, 'metadata_user_id_absent_policy') || '-'}`)
-    privacyParts.push(`metadata.user_id检查适用=${getExtraBoolLabel(extra, 'metadata_user_id_check_applicable') || '否'}`)
-    privacyParts.push(`metadata.user_id为字符串=${getExtraBoolLabel(extra, 'metadata_user_id_string') || '否'}`)
-    privacyParts.push(`metadata.user_id可解析=${getExtraBoolLabel(extra, 'metadata_user_id_parsed') || '否'}`)
-    privacyParts.push(`metadata.user_id格式=${getExtraString(extra, 'metadata_user_id_format') || '-'}`)
-    privacyParts.push(`请求头处理=${getExtraBoolLabel(extra, 'header_protected') || '否'}`)
-    privacyParts.push(`用户标识处理=${getExtraBoolLabel(extra, 'metadata_user_id_processed') || '否'}`)
-    privacyParts.push(`用户标识最终有效=${getExtraBoolLabel(extra, 'metadata_user_id_final_valid') || '否'}`)
-    privacyParts.push(`用户标识校验=${getExtraPassLabel(extra, 'metadata_user_id_protection_pass') || '-'}`)
-    privacyParts.push(`device_id存在=${getExtraBoolLabel(extra, 'metadata_device_id_present') || '否'}`)
-    privacyParts.push(`device_id已保护=${getExtraBoolLabel(extra, 'metadata_device_id_protected') || '否'}`)
-    privacyParts.push(`device_id策略=${getExtraString(extra, 'metadata_device_id_strategy') || '-'}`)
-    privacyParts.push(`account_uuid存在=${getExtraBoolLabel(extra, 'metadata_account_uuid_present') || '否'}`)
-    privacyParts.push(`account_uuid已清空=${getExtraBoolLabel(extra, 'metadata_account_uuid_cleared') || '否'}`)
-    privacyParts.push(`account_uuid策略=${getExtraString(extra, 'metadata_account_uuid_strategy') || '-'}`)
-    privacyParts.push(`session_id存在=${getExtraBoolLabel(extra, 'metadata_session_id_present') || '否'}`)
-    privacyParts.push(`session_id已保护=${getExtraBoolLabel(extra, 'metadata_session_id_protected') || '否'}`)
-    privacyParts.push(`session_id策略=${getExtraString(extra, 'metadata_session_id_strategy') || '-'}`)
-    privacyParts.push(`metadata版本已固定=${getExtraBoolLabel(extra, 'metadata_user_id_version_pinned') || '否'}`)
-    privacyParts.push(`上游身份收敛=${getExtraBoolLabel(extra, 'metadata_privacy_identity_unified') || '否'}`)
-    privacyParts.push(`请求头结果=${getExtraString(extra, 'header_result') || '-'}`)
-    privacyParts.push(`请求头校验=${getExtraPassLabel(extra, 'header_privacy_protection_pass') || '-'}`)
-    privacyParts.push(`header指纹最终默认=${getExtraBoolLabel(extra, 'header_fingerprint_final_default') || '否'}`)
-    privacyParts.push(`header指纹策略=${getExtraString(extra, 'header_fingerprint_strategy') || '-'}`)
-    privacyParts.push(`默认header总数=${getExtraString(extra, 'header_default_total') || '0'}`)
-    privacyParts.push(`默认header改写数=${getExtraString(extra, 'header_default_changed_count') || '0'}`)
-    privacyParts.push(`默认header最终匹配数=${getExtraString(extra, 'header_default_final_match_count') || '0'}`)
-    privacyParts.push(`Accept最终默认=${getExtraBoolLabel(extra, 'accept_header_final_default') || '否'}`)
-    privacyParts.push(`User-Agent最终默认=${getExtraBoolLabel(extra, 'user_agent_final_default') || '否'}`)
-    privacyParts.push(`User-Agent已改写=${getExtraBoolLabel(extra, 'user_agent_changed') || '否'}`)
-    privacyParts.push(`User-Agent策略=${getExtraString(extra, 'user_agent_strategy') || '-'}`)
-    privacyParts.push(`X-Stainless总数=${getExtraString(extra, 'x_stainless_header_total') || '0'}`)
-    privacyParts.push(`X-Stainless改写数=${getExtraString(extra, 'x_stainless_header_changed_count') || '0'}`)
-    privacyParts.push(`X-Stainless最终匹配数=${getExtraString(extra, 'x_stainless_header_final_match_count') || '0'}`)
-    privacyParts.push(`X-Stainless最终默认=${getExtraBoolLabel(extra, 'x_stainless_final_default') || '否'}`)
-    privacyParts.push(`X-Stainless策略=${getExtraString(extra, 'x_stainless_strategy') || '-'}`)
-    privacyParts.push(`X-App最终默认=${getExtraBoolLabel(extra, 'x_app_final_default') || '否'}`)
-    privacyParts.push(`X-App已改写=${getExtraBoolLabel(extra, 'x_app_changed') || '否'}`)
-    privacyParts.push(`X-App策略=${getExtraString(extra, 'x_app_strategy') || '-'}`)
-    privacyParts.push(`Direct-Browser-Access最终默认=${getExtraBoolLabel(extra, 'direct_browser_access_final_default') || '否'}`)
-    privacyParts.push(`Direct-Browser-Access已改写=${getExtraBoolLabel(extra, 'direct_browser_access_changed') || '否'}`)
-    privacyParts.push(`X-Claude-Code-Session-Id存在=${getExtraBoolLabel(extra, 'x_claude_code_session_present') || '否'}`)
-    privacyParts.push(`X-Claude-Code-Session-Id已改写=${getExtraBoolLabel(extra, 'x_claude_code_session_changed') || '否'}`)
-    privacyParts.push(`X-Claude-Code-Session-Id已保护=${getExtraBoolLabel(extra, 'x_claude_code_session_final_protected') || '否'}`)
-    privacyParts.push(`X-Claude-Code-Session-Id策略=${getExtraString(extra, 'x_claude_code_session_strategy') || '-'}`)
-    privacyParts.push(`x-client-request-id存在=${getExtraBoolLabel(extra, 'x_client_request_id_present') || '否'}`)
-    privacyParts.push(`x-client-request-id已重置=${getExtraBoolLabel(extra, 'x_client_request_id_regenerated') || '否'}`)
-    privacyParts.push(`x-client-request-id策略=${getExtraString(extra, 'x_client_request_id_strategy') || '-'}`)
-    privacyParts.push(`认证头保持=${getExtraBoolLabel(extra, 'authorization_preserved') || '否'}`)
-    privacyParts.push(`认证头改写=${getExtraBoolLabel(extra, 'authorization_protected') || '否'}`)
-    privacyParts.push(`测试功能头保持=${getExtraBoolLabel(extra, 'anthropic_beta_preserved') || '否'}`)
-    privacyParts.push(`测试功能头改写=${getExtraBoolLabel(extra, 'anthropic_beta_protected') || '否'}`)
-    privacyParts.push(`Content-Type保持=${getExtraBoolLabel(extra, 'content_type_preserved') || '否'}`)
-    privacyParts.push(`模型与消息正文改写=${getExtraBoolLabel(extra, 'model_or_messages_body_protected') || '否'}`)
-    privacyParts.push(`记录敏感原值=${getExtraBoolLabel(extra, 'sensitive_values_logged') || '否'}`)
-    privacyParts.push(`敏感值记录原因=${getExtraString(extra, 'sensitive_values_logged_reason') || '-'}`)
-    pushExtraStringField(privacyParts, extra, '原始metadata.user_id值', 'raw_metadata_user_id')
-    pushExtraBoolField(privacyParts, extra, '原始metadata.user_id可解析', 'raw_metadata_user_id_parsed')
-    pushExtraStringField(privacyParts, extra, '原始metadata.user_id格式', 'raw_metadata_user_id_format')
-    pushExtraStringField(privacyParts, extra, '原始device_id值', 'raw_device_id')
-    pushExtraStringField(privacyParts, extra, '原始account_uuid值', 'raw_account_uuid')
-    pushExtraStringField(privacyParts, extra, '原始session_id值', 'raw_session_id')
-    pushExtraStringField(privacyParts, extra, '原始X-Claude-Code-Session-Id值', 'raw_x_claude_code_session_id')
-    pushExtraStringField(privacyParts, extra, '原始x-client-request-id值', 'raw_x_client_request_id')
-    pushExtraStringField(privacyParts, extra, '原始Accept值', 'raw_accept')
-    pushExtraStringField(privacyParts, extra, '原始User-Agent值', 'raw_user_agent')
-    pushExtraStringField(privacyParts, extra, '原始X-App值', 'raw_x_app')
-    pushExtraStringField(privacyParts, extra, '原始Direct-Browser-Access值', 'raw_direct_browser_access')
-    pushExtraStringField(privacyParts, extra, '原始X-Stainless-Lang值', 'raw_x_stainless_lang')
-    pushExtraStringField(privacyParts, extra, '原始X-Stainless-Package-Version值', 'raw_x_stainless_package_version')
-    pushExtraStringField(privacyParts, extra, '原始X-Stainless-OS值', 'raw_x_stainless_os')
-    pushExtraStringField(privacyParts, extra, '原始X-Stainless-Arch值', 'raw_x_stainless_arch')
-    pushExtraStringField(privacyParts, extra, '原始X-Stainless-Runtime值', 'raw_x_stainless_runtime')
-    pushExtraStringField(privacyParts, extra, '原始X-Stainless-Runtime-Version值', 'raw_x_stainless_runtime_version')
-    pushExtraStringField(privacyParts, extra, '原始X-Stainless-Retry-Count值', 'raw_x_stainless_retry_count')
-    pushExtraStringField(privacyParts, extra, '原始X-Stainless-Timeout值', 'raw_x_stainless_timeout')
-    pushExtraStringField(privacyParts, extra, '派生metadata.user_id上游值', 'derived_metadata_user_id')
-    pushExtraStringField(privacyParts, extra, '派生metadata.user_id候选值', 'derived_metadata_user_id_candidate')
-    pushExtraBoolField(privacyParts, extra, '派生metadata.user_id发送上游', 'derived_metadata_user_id_upstream')
-    pushExtraStringField(privacyParts, extra, '派生device_id上游值', 'derived_device_id')
-    pushExtraStringField(privacyParts, extra, '派生device_id候选值', 'derived_device_id_candidate')
-    pushExtraStringField(privacyParts, extra, '派生account_uuid上游值', 'derived_account_uuid')
-    pushExtraStringField(privacyParts, extra, '派生account_uuid候选值', 'derived_account_uuid_candidate')
-    pushExtraStringField(privacyParts, extra, '派生session_id上游值', 'derived_session_id')
-    pushExtraStringField(privacyParts, extra, '派生session_id候选值', 'derived_session_id_candidate')
-    pushExtraStringField(privacyParts, extra, '派生X-Claude-Code-Session-Id值', 'derived_x_claude_code_session_id')
-    pushExtraStringField(privacyParts, extra, '派生x-client-request-id值', 'derived_x_client_request_id')
-    pushExtraStringField(privacyParts, extra, '派生Accept值', 'derived_accept')
-    pushExtraStringField(privacyParts, extra, '派生User-Agent值', 'derived_user_agent')
-    pushExtraStringField(privacyParts, extra, '派生X-App值', 'derived_x_app')
-    pushExtraStringField(privacyParts, extra, '派生Direct-Browser-Access值', 'derived_direct_browser_access')
-    pushExtraStringField(privacyParts, extra, '派生X-Stainless-Lang值', 'derived_x_stainless_lang')
-    pushExtraStringField(privacyParts, extra, '派生X-Stainless-Package-Version值', 'derived_x_stainless_package_version')
-    pushExtraStringField(privacyParts, extra, '派生X-Stainless-OS值', 'derived_x_stainless_os')
-    pushExtraStringField(privacyParts, extra, '派生X-Stainless-Arch值', 'derived_x_stainless_arch')
-    pushExtraStringField(privacyParts, extra, '派生X-Stainless-Runtime值', 'derived_x_stainless_runtime')
-    pushExtraStringField(privacyParts, extra, '派生X-Stainless-Runtime-Version值', 'derived_x_stainless_runtime_version')
-    pushExtraStringField(privacyParts, extra, '派生X-Stainless-Retry-Count值', 'derived_x_stainless_retry_count')
-    pushExtraStringField(privacyParts, extra, '派生X-Stainless-Timeout值', 'derived_x_stainless_timeout')
-    pushExtraStringField(privacyParts, extra, '派生TLS指纹配置', 'derived_tls_fingerprint_profile')
-    privacyParts.push(`原始device_id记录=${getExtraBoolLabel(extra, 'raw_device_id_logged') || '否'}`)
-    privacyParts.push(`原始session_id记录=${getExtraBoolLabel(extra, 'raw_session_id_logged') || '否'}`)
-    privacyParts.push(`原始account_uuid记录=${getExtraBoolLabel(extra, 'raw_account_uuid_logged') || '否'}`)
-    privacyParts.push(`原始请求ID记录=${getExtraBoolLabel(extra, 'raw_client_request_id_logged') || '否'}`)
-    privacyParts.push(`派生device_id记录=${getExtraBoolLabel(extra, 'derived_device_id_logged') || '否'}`)
-    privacyParts.push(`派生session_id记录=${getExtraBoolLabel(extra, 'derived_session_id_logged') || '否'}`)
-    privacyParts.push(`认证值记录=${getExtraBoolLabel(extra, 'authorization_value_logged') || '否'}`)
-    privacyParts.push(`token记录=${getExtraBoolLabel(extra, 'token_value_logged') || '否'}`)
-    privacyParts.push(`模型记录=${getExtraBoolLabel(extra, 'model_value_logged') || '否'}`)
-    privacyParts.push(`请求正文记录=${getExtraBoolLabel(extra, 'request_body_logged') || '否'}`)
-    parts.push(privacyParts.join(' '))
+    parts.push(formatTelemetryPrivacyLogSummary(row))
+    return parts.join('  ')
   }
-
   const corrParts: string[] = []
   if (row.request_id && !isTelemetryPrivacyLog) corrParts.push(`req=${row.request_id}`)
   if (row.client_request_id && !isTelemetryPrivacyLog) corrParts.push(`client_req=${row.client_request_id}`)

@@ -44,6 +44,45 @@ func (s *OpsService) ListSystemLogs(ctx context.Context, filter *OpsSystemLogFil
 	return result, nil
 }
 
+func (s *OpsService) GetTelemetryPrivacyStats(ctx context.Context, filter *OpsTelemetryPrivacyStatsFilter) (*OpsTelemetryPrivacyStats, error) {
+	if err := s.RequireMonitoringEnabled(ctx); err != nil {
+		return nil, err
+	}
+	if filter == nil || filter.AccountID <= 0 {
+		return nil, infraerrors.BadRequest("OPS_TELEMETRY_PRIVACY_STATS_INVALID_ACCOUNT", "账号 ID 无效")
+	}
+	if filter.EndTime.IsZero() {
+		filter.EndTime = time.Now().UTC()
+	}
+	if filter.StartTime.IsZero() {
+		filter.StartTime = filter.EndTime.Add(-24 * time.Hour)
+	}
+	if filter.StartTime.After(filter.EndTime) {
+		return nil, infraerrors.BadRequest("OPS_TELEMETRY_PRIVACY_STATS_INVALID_RANGE", "时间范围无效")
+	}
+	if filter.EndTime.Sub(filter.StartTime) > 30*24*time.Hour {
+		return nil, infraerrors.BadRequest("OPS_TELEMETRY_PRIVACY_STATS_RANGE_TOO_LARGE", "时间范围不能超过 30 天")
+	}
+	if s.opsRepo == nil {
+		return &OpsTelemetryPrivacyStats{
+			AccountID: filter.AccountID,
+			StartTime: filter.StartTime.UTC(),
+			EndTime:   filter.EndTime.UTC(),
+		}, nil
+	}
+	stats, err := s.opsRepo.GetTelemetryPrivacyStats(ctx, filter)
+	if err != nil {
+		return nil, infraerrors.InternalServer("OPS_TELEMETRY_PRIVACY_STATS_FAILED", "遥测隐私统计加载失败").WithCause(err)
+	}
+	if stats == nil {
+		stats = &OpsTelemetryPrivacyStats{}
+	}
+	stats.AccountID = filter.AccountID
+	stats.StartTime = filter.StartTime.UTC()
+	stats.EndTime = filter.EndTime.UTC()
+	return stats, nil
+}
+
 func (s *OpsService) CleanupSystemLogs(ctx context.Context, filter *OpsSystemLogCleanupFilter, operatorID int64) (int64, error) {
 	if err := s.RequireMonitoringEnabled(ctx); err != nil {
 		return 0, err

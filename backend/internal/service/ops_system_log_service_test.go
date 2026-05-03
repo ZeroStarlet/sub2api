@@ -84,6 +84,72 @@ func TestOpsServiceListSystemLogs_RepoErrorMapped(t *testing.T) {
 	}
 }
 
+func TestOpsServiceGetTelemetryPrivacyStats_SuccessAndValidation(t *testing.T) {
+	start := time.Now().UTC().Add(-time.Hour)
+	end := time.Now().UTC()
+	var gotFilter *OpsTelemetryPrivacyStatsFilter
+	repo := &opsRepoMock{
+		GetTelemetryPrivacyStatsFn: func(ctx context.Context, filter *OpsTelemetryPrivacyStatsFilter) (*OpsTelemetryPrivacyStats, error) {
+			gotFilter = filter
+			return &OpsTelemetryPrivacyStats{Total: 2, SuccessCount: 2}, nil
+		},
+	}
+	svc := NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	out, err := svc.GetTelemetryPrivacyStats(context.Background(), &OpsTelemetryPrivacyStatsFilter{
+		AccountID: 4,
+		StartTime: start,
+		EndTime:   end,
+	})
+	if err != nil {
+		t.Fatalf("GetTelemetryPrivacyStats() error: %v", err)
+	}
+	if gotFilter == nil || gotFilter.AccountID != 4 {
+		t.Fatalf("unexpected repository filter: %+v", gotFilter)
+	}
+	if out.Total != 2 || out.SuccessCount != 2 || out.AccountID != 4 {
+		t.Fatalf("unexpected stats: %+v", out)
+	}
+
+	if _, err := svc.GetTelemetryPrivacyStats(context.Background(), &OpsTelemetryPrivacyStatsFilter{AccountID: 0}); err == nil {
+		t.Fatalf("expected invalid account error")
+	}
+	if _, err := svc.GetTelemetryPrivacyStats(context.Background(), &OpsTelemetryPrivacyStatsFilter{
+		AccountID: 1,
+		StartTime: end,
+		EndTime:   start,
+	}); err == nil {
+		t.Fatalf("expected invalid range error")
+	}
+}
+
+func TestOpsServiceGetTelemetryPrivacyStats_NilRepoReturnsEmpty(t *testing.T) {
+	svc := NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	out, err := svc.GetTelemetryPrivacyStats(context.Background(), &OpsTelemetryPrivacyStatsFilter{AccountID: 8})
+	if err != nil {
+		t.Fatalf("GetTelemetryPrivacyStats() error: %v", err)
+	}
+	if out == nil || out.AccountID != 8 || out.Total != 0 || out.StartTime.IsZero() || out.EndTime.IsZero() {
+		t.Fatalf("unexpected nil-repo result: %+v", out)
+	}
+}
+
+func TestOpsServiceGetTelemetryPrivacyStats_RepoErrorMapped(t *testing.T) {
+	repo := &opsRepoMock{
+		GetTelemetryPrivacyStatsFn: func(ctx context.Context, filter *OpsTelemetryPrivacyStatsFilter) (*OpsTelemetryPrivacyStats, error) {
+			return nil, errors.New("db down")
+		},
+	}
+	svc := NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	_, err := svc.GetTelemetryPrivacyStats(context.Background(), &OpsTelemetryPrivacyStatsFilter{AccountID: 1})
+	if err == nil {
+		t.Fatalf("expected mapped internal error")
+	}
+	if !strings.Contains(err.Error(), "OPS_TELEMETRY_PRIVACY_STATS_FAILED") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestOpsServiceCleanupSystemLogs_SuccessAndAudit(t *testing.T) {
 	var audit *OpsSystemLogCleanupAudit
 	repo := &opsRepoMock{
