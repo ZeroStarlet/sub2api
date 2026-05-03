@@ -40,6 +40,32 @@
         />
       </div>
 
+      <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.dataImportTelemetryPrivacy') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.dataImportTelemetryPrivacyHint') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            @click="enableTelemetryPrivacyOnImport = !enableTelemetryPrivacyOnImport"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              enableTelemetryPrivacyOnImport ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                enableTelemetryPrivacyOnImport ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
+      </div>
+
       <div
         v-if="result"
         class="space-y-2 rounded-xl border border-gray-200 p-4 dark:border-dark-700"
@@ -90,7 +116,8 @@ import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import { adminAPI } from '@/api/admin'
 import { useAppStore } from '@/stores/app'
-import type { AdminDataImportResult } from '@/types'
+import { withTelemetryPrivacyEnabledForImportedAccounts } from '@/utils/telemetryPrivacyData'
+import type { AdminDataImportResult, AdminDataPayload } from '@/types'
 
 interface Props {
   show: boolean
@@ -110,6 +137,7 @@ const appStore = useAppStore()
 const importing = ref(false)
 const file = ref<File | null>(null)
 const result = ref<AdminDataImportResult | null>(null)
+const enableTelemetryPrivacyOnImport = ref(true)
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const fileName = computed(() => file.value?.name || '')
@@ -122,6 +150,7 @@ watch(
     if (open) {
       file.value = null
       result.value = null
+      enableTelemetryPrivacyOnImport.value = true
       if (fileInput.value) {
         fileInput.value.value = ''
       }
@@ -170,7 +199,10 @@ const handleImport = async () => {
   importing.value = true
   try {
     const text = await readFileAsText(file.value)
-    const dataPayload = JSON.parse(text)
+    const parsedPayload = JSON.parse(text) as AdminDataPayload
+    const dataPayload = enableTelemetryPrivacyOnImport.value
+      ? withTelemetryPrivacyEnabledForImportedAccounts(parsedPayload).payload
+      : parsedPayload
 
     const res = await adminAPI.accounts.importData({
       data: dataPayload,
