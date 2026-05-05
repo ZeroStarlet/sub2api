@@ -404,6 +404,22 @@ func getOpsUpstreamModelForLog(c *gin.Context) string {
 	return ""
 }
 
+// applyOpsTelemetryPrivacyErrorLogRedaction 清除遥测隐私保护账号的错误日志中可能携带客户端身份或对话内容的字段。
+//
+// 保留字段（运维排障必需，经针对性脱敏处理）：
+//   - ErrorMessage：已由 parseOpsErrorResponse 从客户端响应体中提取的结构化错误消息
+//   - ErrorBody：客户端错误响应正文，先经遥测专用脱敏（清除 model / metadata 等 JSON key），
+//     再由 sanitizeErrorBodyForStorage 脱敏（token/secret 等敏感 key）
+//   - UpstreamErrorMessage：上游错误消息摘要，经 sanitizeUpstreamErrorMessage 脱敏
+//   - UpstreamErrors[].Message：上游错误事件消息，同上脱敏
+//
+// 清除字段（可能携带模型名、遥测标识、对话内容或认证凭据）：
+//   - Model / RequestedModel / UpstreamModel：模型名可反推客户端使用模式
+//   - UserAgent：可携带 Claude Code 版本等客户端指纹
+//   - RequestHeadersJSON：可能包含认证头
+//   - UpstreamErrorDetail / UpstreamErrors[].Detail：网关路径中从上游响应体直接复制，
+//     可能包含模型名、metadata.user_id 等遥测标识，且通用脱敏器不处理这些字段
+//   - UpstreamErrors[].UpstreamRequestBody / UpstreamResponseBody：对话内容与上游原始响应
 func applyOpsTelemetryPrivacyErrorLogRedaction(c *gin.Context, entry *service.OpsInsertErrorLogInput) {
 	if !service.ShouldSkipOpsRequestBodyForTelemetryPrivacy(c) || entry == nil {
 		return
@@ -413,19 +429,89 @@ func applyOpsTelemetryPrivacyErrorLogRedaction(c *gin.Context, entry *service.Op
 	entry.RequestedModel = ""
 	entry.UpstreamModel = ""
 	entry.UserAgent = ""
-	entry.ErrorMessage = "遥测隐私保护已隐藏错误消息"
-	entry.ErrorBody = ""
-	entry.UpstreamErrorMessage = nil
 	entry.UpstreamErrorDetail = nil
 	entry.RequestHeadersJSON = nil
+	// ErrorBody 在 passthrough 场景下可能等同于上游原始响应体，需做遥测专用脱敏。
+	// 若脱敏后为空（非 JSON 输入），同步清除 ErrorMessage 以防原始响应体通过 Message 落库。
+	if wasRedacted := redactTelemetryPrivacyErrorBodyInPlace(entry); wasRedacted && strings.TrimSpace(entry.ErrorBody) == "" {
+		entry.ErrorMessage = ""
+	}
 	for _, ev := range entry.UpstreamErrors {
 		if ev == nil {
 			continue
 		}
-		ev.Message = "遥测隐私保护已隐藏上游错误消息"
 		ev.Detail = ""
 		ev.UpstreamRequestBody = ""
 		ev.UpstreamResponseBody = ""
+	}
+}
+
+// redactTelemetryPrivacyErrorBodyInPlace 对 entry.ErrorBody 做遥测隐私 JSON 脱敏：
+// 递归清除 model key（任意层级，大小写不敏感）和 metadata 子对象（包含 user_id / device_id / session_id 等遥测标识）。
+// 保留 error.type / error.message / code 等排障必需字段不变。
+//
+// 清空 ErrorBody 并返回 true（触发 ErrorMessage 同步清除）的场景：
+//   - 输入非 JSON 字符串（无法解析）
+//   - 顶层为 JSON scalar（string/number/bool/null）：parseOpsErrorResponse 会将其原文
+//     放入 ErrorMessage，此处必须同步清空以防止原始响应体通过 Message 落库
+//
+// 返回 false = 输入为空或 entry 为 nil（无操作）。
+func redactTelemetryPrivacyErrorBodyInPlace(entry *service.OpsInsertErrorLogInput) bool {
+	if entry == nil {
+		return false
+	}
+	raw := strings.TrimSpace(entry.ErrorBody)
+	if raw == "" {
+		return false
+	}
+	var root any
+	if err := json.Unmarshal([]byte(raw), &root); err != nil {
+		entry.ErrorBody = ""
+		return true
+	}
+	// JSON scalar (string/number/bool/null) 不是结构化错误响应，
+	// parseOpsErrorResponse 会将其原文放入 ErrorMessage，必须清空。
+	switch root.(type) {
+	case map[string]any, []any:
+		// OK — 结构化 JSON，继续脱敏
+	default:
+		entry.ErrorBody = ""
+		return true
+	}
+	cleaned := redactTelemetryPrivacyJSON(root)
+	encoded, err := json.Marshal(cleaned)
+	if err != nil {
+		entry.ErrorBody = ""
+		return true
+	}
+	entry.ErrorBody = string(encoded)
+	return true
+}
+
+func redactTelemetryPrivacyJSON(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, vv := range t {
+			// 清除 model key（任意层级，大小写不敏感）
+			if strings.EqualFold(k, "model") {
+				continue
+			}
+			// 清除 metadata 子对象（包含遥测标识，大小写不敏感）
+			if strings.EqualFold(k, "metadata") {
+				continue
+			}
+			out[k] = redactTelemetryPrivacyJSON(vv)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(t))
+		for _, vv := range t {
+			out = append(out, redactTelemetryPrivacyJSON(vv))
+		}
+		return out
+	default:
+		return v
 	}
 }
 

@@ -97,53 +97,162 @@ func TestApplyOpsTelemetryPrivacyErrorLogRedaction_ClearsModelAndBodyFields(t *t
 	service.MarkOpsTelemetryPrivacySkipRequestBody(c)
 	setOpsEndpointContext(c, "claude-3-7-sonnet-20250219", int16(2))
 
-	detail := `{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":"raw-user"}}`
+	// upstreamDetail 模拟上游原始响应体，包含模型名和遥测标识
+	upstreamDetail := `{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":"raw-user"}}`
+	// rawErrorBody 模拟 passthrough 场景下 ErrorBody 可能等同于上游原始响应体，
+	// 包含 model key 和 metadata 子对象 —— 遥测脱敏应清除这些 key，保留 error 信息
+	rawErrorBody := `{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":"raw-user","device_id":"dev-123"},"error":{"message":"No available accounts: no available accounts","type":"api_error"},"type":"error"}`
 	entry := &service.OpsInsertErrorLogInput{
 		Model:          "claude-3-7-sonnet-20250219",
 		RequestedModel: "claude-3-7-sonnet-20250219",
 		UpstreamModel:  getOpsUpstreamModelForLog(c),
 		UserAgent:      "claude-cli/9.9.9 (external, cli)",
-		ErrorMessage:   "model claude-3-7-sonnet-20250219 not found",
-		ErrorBody:      detail,
+		ErrorMessage:   "No available accounts: no available accounts",
+		ErrorBody:      rawErrorBody,
 		UpstreamErrorMessage: func() *string {
 			msg := "upstream model claude-3-7-sonnet-20250219 failed"
 			return &msg
 		}(),
-		UpstreamErrorDetail: &detail,
-		RequestHeadersJSON:  &detail,
+		UpstreamErrorDetail: &upstreamDetail,
+		RequestHeadersJSON:  &upstreamDetail,
 		UpstreamErrors: []*service.OpsUpstreamErrorEvent{{
 			UpstreamStatusCode:   http.StatusBadGateway,
 			Kind:                 "request_error",
 			Message:              "model claude-3-7-sonnet-20250219 failed",
-			Detail:               detail,
-			UpstreamRequestBody:  detail,
-			UpstreamResponseBody: detail,
+			Detail:               upstreamDetail,
+			UpstreamRequestBody:  upstreamDetail,
+			UpstreamResponseBody: upstreamDetail,
 		}},
 	}
 
 	applyOpsTelemetryPrivacyErrorLogRedaction(c, entry)
 
+	// 模型名、User-Agent、请求头等身份相关字段必须清除
 	require.Empty(t, entry.Model)
 	require.Empty(t, entry.RequestedModel)
 	require.Empty(t, entry.UpstreamModel)
 	require.Empty(t, entry.UserAgent)
-	require.Equal(t, "遥测隐私保护已隐藏错误消息", entry.ErrorMessage)
-	require.Empty(t, entry.ErrorBody)
-	require.Nil(t, entry.UpstreamErrorMessage)
-	require.Nil(t, entry.UpstreamErrorDetail)
 	require.Nil(t, entry.RequestHeadersJSON)
+	// UpstreamErrorDetail 是上游响应体副本，在遥测隐私下必须清除
+	require.Nil(t, entry.UpstreamErrorDetail)
+	// ErrorMessage 是 JSON 解析后的错误消息，不含遥测标识，应保留
+	require.Equal(t, "No available accounts: no available accounts", entry.ErrorMessage)
+	// ErrorBody 经遥测专用脱敏后：model key 和 metadata 子对象已清除，error 信息保留
+	require.NotEmpty(t, entry.ErrorBody)
+	require.NotContains(t, entry.ErrorBody, `"model"`)
+	require.NotContains(t, entry.ErrorBody, `"metadata"`)
+	require.NotContains(t, entry.ErrorBody, "raw-user")
+	require.NotContains(t, entry.ErrorBody, "dev-123")
+	require.Contains(t, entry.ErrorBody, "api_error")
+	require.Contains(t, entry.ErrorBody, "No available accounts")
+	require.NotNil(t, entry.UpstreamErrorMessage)
+	require.Equal(t, "upstream model claude-3-7-sonnet-20250219 failed", *entry.UpstreamErrorMessage)
 	require.Len(t, entry.UpstreamErrors, 1)
-	require.Equal(t, "遥测隐私保护已隐藏上游错误消息", entry.UpstreamErrors[0].Message)
+	// 上游错误事件消息保留，Detail 清除（Detail 来自上游原始响应体）
+	require.Equal(t, "model claude-3-7-sonnet-20250219 failed", entry.UpstreamErrors[0].Message)
 	require.Empty(t, entry.UpstreamErrors[0].Detail)
+	// 上游请求/响应正文必须清除，避免泄漏对话内容
 	require.Empty(t, entry.UpstreamErrors[0].UpstreamRequestBody)
 	require.Empty(t, entry.UpstreamErrors[0].UpstreamResponseBody)
 
 	raw, err := json.Marshal(entry)
 	require.NoError(t, err)
 	text := string(raw)
-	require.NotContains(t, text, "claude-3-7-sonnet-20250219")
-	require.NotContains(t, text, "raw-user")
+	// User-Agent 与上游原始响应体中的遥测标识必须在序列化后不可见
 	require.NotContains(t, text, "claude-cli/9.9.9")
+	require.NotContains(t, text, "raw-user")
+	require.NotContains(t, text, "dev-123")
+}
+
+// TestApplyOpsTelemetryPrivacyErrorLogRedaction_NonJSONBodyClearsMessage 验证：
+// ErrorBody 为非 JSON 时，parseOpsErrorResponse 会将原始响应体截断放入 ErrorMessage。
+// 遥测隐私下 ErrorBody 被清空后，ErrorMessage 也必须同步清除，防止原始响应体通过 Message 落库。
+func TestApplyOpsTelemetryPrivacyErrorLogRedaction_NonJSONBodyClearsMessage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	service.MarkOpsTelemetryPrivacySkipRequestBody(c)
+
+	// 模拟 parseOpsErrorResponse 对非 JSON 响应的 fallback 行为：
+	// 将原始 body 截断作为 ErrorMessage
+	nonJSONBody := "<html>Internal Server Error: model claude-3-7-sonnet-20250219 for user raw-user</html>"
+	entry := &service.OpsInsertErrorLogInput{
+		Model:        "claude-3-7-sonnet-20250219",
+		UserAgent:    "claude-cli/9.9.9 (external, cli)",
+		ErrorMessage: nonJSONBody, // parseOpsErrorResponse 非 JSON fallback 的结果
+		ErrorBody:    nonJSONBody,
+	}
+
+	applyOpsTelemetryPrivacyErrorLogRedaction(c, entry)
+
+	// 非 JSON ErrorBody 被清空后，ErrorMessage 也必须同步清除
+	require.Empty(t, entry.ErrorBody)
+	require.Empty(t, entry.ErrorMessage)
+	require.Empty(t, entry.Model)
+	require.Empty(t, entry.UserAgent)
+}
+
+// TestApplyOpsTelemetryPrivacyErrorLogRedaction_JSONScalarBodyClearsMessage 验证：
+// 响应体为合法 JSON scalar（如 `"raw string"`）时，parseOpsErrorResponse 会将其原文
+// 放入 ErrorMessage，而 redactTelemetryPrivacyErrorBodyInPlace 将其视为非结构化响应清空，
+// 从而触发 ErrorMessage 同步清除。
+func TestApplyOpsTelemetryPrivacyErrorLogRedaction_JSONScalarBodyClearsMessage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	service.MarkOpsTelemetryPrivacySkipRequestBody(c)
+
+	// JSON scalar body —— parseOpsErrorResponse 会 fallback 到原文
+	jsonScalarBody := `"Internal error: model claude-3-7-sonnet for user raw-user"`
+	entry := &service.OpsInsertErrorLogInput{
+		Model:        "claude-3-7-sonnet-20250219",
+		UserAgent:    "claude-cli/9.9.9 (external, cli)",
+		ErrorMessage: jsonScalarBody,
+		ErrorBody:    jsonScalarBody,
+	}
+
+	applyOpsTelemetryPrivacyErrorLogRedaction(c, entry)
+
+	// JSON scalar 不是结构化响应，ErrorBody 和 ErrorMessage 必须同步清空
+	require.Empty(t, entry.ErrorBody)
+	require.Empty(t, entry.ErrorMessage)
+	require.Empty(t, entry.Model)
+	require.Empty(t, entry.UserAgent)
+}
+
+func TestRedactTelemetryPrivacyErrorBodyInPlace_EmptyReturnsFalse(t *testing.T) {
+	entry := &service.OpsInsertErrorLogInput{ErrorBody: ""}
+	require.False(t, redactTelemetryPrivacyErrorBodyInPlace(entry))
+	require.Empty(t, entry.ErrorBody)
+
+	nilEntry := (*service.OpsInsertErrorLogInput)(nil)
+	require.False(t, redactTelemetryPrivacyErrorBodyInPlace(nilEntry))
+}
+
+func TestRedactTelemetryPrivacyErrorBodyInPlace_PreservesErrorStructure(t *testing.T) {
+	entry := &service.OpsInsertErrorLogInput{
+		ErrorBody: `{"code":"INSUFFICIENT_BALANCE","message":"Insufficient balance","type":"error"}`,
+	}
+	require.True(t, redactTelemetryPrivacyErrorBodyInPlace(entry))
+	require.NotEmpty(t, entry.ErrorBody)
+	require.Contains(t, entry.ErrorBody, "INSUFFICIENT_BALANCE")
+	require.Contains(t, entry.ErrorBody, "Insufficient balance")
+	require.NotContains(t, entry.ErrorBody, `"model"`)
+}
+
+func TestRedactTelemetryPrivacyErrorBodyInPlace_CaseInsensitiveKeys(t *testing.T) {
+	entry := &service.OpsInsertErrorLogInput{
+		ErrorBody: `{"Model":"claude-3-7-sonnet","Metadata":{"user_id":"u1"},"error":{"type":"api_error","message":"fail"}}`,
+	}
+	require.True(t, redactTelemetryPrivacyErrorBodyInPlace(entry))
+	require.NotEmpty(t, entry.ErrorBody)
+	require.NotContains(t, entry.ErrorBody, `"Model"`)
+	require.NotContains(t, entry.ErrorBody, `"Metadata"`)
+	require.NotContains(t, entry.ErrorBody, "claude-3-7-sonnet")
+	require.NotContains(t, entry.ErrorBody, "u1")
+	require.Contains(t, entry.ErrorBody, "api_error")
 }
 
 func TestMarkOpsTelemetryPrivacyForAccount_ClearsExistingRequestContext(t *testing.T) {
@@ -198,7 +307,8 @@ func TestMarkOpsTelemetryPrivacyForAccount_ClearsExistingRequestContext(t *testi
 	require.Empty(t, entry.RequestedModel)
 	require.Empty(t, entry.UpstreamModel)
 	require.Empty(t, entry.UserAgent)
-	require.Equal(t, "遥测隐私保护已隐藏错误消息", entry.ErrorMessage)
+	// 错误消息必须保留，确保管理员可定位问题根因
+	require.Equal(t, "model claude-3-7-sonnet-20250219 failed", entry.ErrorMessage)
 	require.Equal(t, int64(0), OpsErrorLogSanitizedTotal())
 }
 
@@ -406,7 +516,7 @@ func TestIsKnownOpsErrorType(t *testing.T) {
 		require.True(t, isKnownOpsErrorType(k), "expected known: %s", k)
 	}
 
-	unknown := []string{"<nil>", "null", "", "random_error", "some_new_type", "<nil>\u003e"}
+	unknown := []string{"<nil>", "null", "", "random_error", "some_new_type", "<nil>>"}
 	for _, u := range unknown {
 		require.False(t, isKnownOpsErrorType(u), "expected unknown: %q", u)
 	}
