@@ -6818,6 +6818,10 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	} else if fingerprint != nil {
 		body = syncBillingHeaderVersion(body, fingerprint.UserAgent)
 	}
+	// 遥测隐私保护：将计费头 cc_version 指纹替换为账号级确定性值
+	// 必须在 CCH 签名之前执行，否则签名与正文不一致会被上游检测
+	body = forceBillingCCVersionFingerprint(body, account)
+
 	// CCH 签名：将 cch=00000 占位符替换为 xxHash64 签名（需在所有 body 修改之后）
 	if enableCCH {
 		body = signBillingHeaderCCH(body)
@@ -10017,6 +10021,10 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	} else if ctFingerprint != nil && ctEnableFP {
 		body = syncBillingHeaderVersion(body, ctFingerprint.UserAgent)
 	}
+	// 遥测隐私保护：将计费头 cc_version 指纹替换为账号级确定性值
+	// 必须在 CCH 签名之前执行，否则签名与正文不一致会被上游检测
+	body = forceBillingCCVersionFingerprint(body, account)
+
 	if ctEnableCCH {
 		body = signBillingHeaderCCH(body)
 	}
