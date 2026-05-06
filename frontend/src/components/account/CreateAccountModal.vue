@@ -2387,6 +2387,19 @@
               />
             </button>
           </div>
+          <!-- 自定义伪装 CLI 版本号 -->
+          <div v-if="telemetryPrivacyEnabled" class="mt-3 border-t border-gray-100 pt-3 dark:border-dark-600">
+            <label class="input-label">{{ t('admin.accounts.quotaControl.telemetryPrivacy.cliVersionLabel') }}</label>
+            <input
+              v-model="telemetryPrivacyCLIVersion"
+              type="text"
+              class="input mt-1"
+              :placeholder="t('admin.accounts.quotaControl.telemetryPrivacy.cliVersionPlaceholder')"
+            />
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.quotaControl.telemetryPrivacy.cliVersionHint') }}
+            </p>
+          </div>
         </div>
 
         <!-- Cache TTL Override -->
@@ -3402,6 +3415,7 @@ const tlsFingerprintProfileId = ref<number | null>(null)
 const tlsFingerprintProfiles = ref<{ id: number; name: string }[]>([])
 const sessionIdMaskingEnabled = ref(false)
 const telemetryPrivacyEnabled = ref(false)
+const telemetryPrivacyCLIVersion = ref('')
 const cacheTTLOverrideEnabled = ref(false)
 const cacheTTLOverrideTarget = ref<string>('5m')
 const customBaseUrlEnabled = ref(false)
@@ -4087,6 +4101,7 @@ const resetForm = () => {
   tlsFingerprintProfileId.value = null
   sessionIdMaskingEnabled.value = false
   telemetryPrivacyEnabled.value = false
+  telemetryPrivacyCLIVersion.value = ''
   cacheTTLOverrideEnabled.value = false
   cacheTTLOverrideTarget.value = '5m'
   customBaseUrlEnabled.value = false
@@ -4180,8 +4195,15 @@ const buildAnthropicExtra = (base?: Record<string, unknown>): Record<string, unk
 const applyAnthropicTelemetryPrivacyExtra = (extra: Record<string, unknown>) => {
   if (form.platform === 'anthropic' && accountCategory.value === 'oauth-based' && telemetryPrivacyEnabled.value) {
     extra.telemetry_privacy_enabled = true
+    const cliVersion = telemetryPrivacyCLIVersion.value.trim()
+    if (cliVersion) {
+      extra.telemetry_privacy_cli_version = cliVersion
+    } else {
+      delete extra.telemetry_privacy_cli_version
+    }
   } else {
     delete extra.telemetry_privacy_enabled
+    delete extra.telemetry_privacy_cli_version
   }
 }
 

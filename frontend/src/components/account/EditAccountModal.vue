@@ -1936,6 +1936,19 @@
               />
             </button>
           </div>
+          <!-- 自定义伪装 CLI 版本号 -->
+          <div v-if="telemetryPrivacyEnabled" class="mt-3 border-t border-gray-100 pt-3 dark:border-dark-600">
+            <label class="input-label">{{ t('admin.accounts.quotaControl.telemetryPrivacy.cliVersionLabel') }}</label>
+            <input
+              v-model="telemetryPrivacyCLIVersion"
+              type="text"
+              class="input mt-1"
+              :placeholder="t('admin.accounts.quotaControl.telemetryPrivacy.cliVersionPlaceholder')"
+            />
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.quotaControl.telemetryPrivacy.cliVersionHint') }}
+            </p>
+          </div>
         </div>
 
         <!-- Cache TTL Override -->
@@ -2292,6 +2305,7 @@ const tlsFingerprintProfileId = ref<number | null>(null)
 const tlsFingerprintProfiles = ref<{ id: number; name: string }[]>([])
 const sessionIdMaskingEnabled = ref(false)
 const telemetryPrivacyEnabled = ref(false)
+const telemetryPrivacyCLIVersion = ref('')
 const cacheTTLOverrideEnabled = ref(false)
 const cacheTTLOverrideTarget = ref<string>('5m')
 const customBaseUrlEnabled = ref(false)
@@ -3017,6 +3031,7 @@ function loadQuotaControlSettings(account: Account) {
   tlsFingerprintProfileId.value = null
   sessionIdMaskingEnabled.value = false
   telemetryPrivacyEnabled.value = false
+  telemetryPrivacyCLIVersion.value = ''
   cacheTTLOverrideEnabled.value = false
   cacheTTLOverrideTarget.value = '5m'
   customBaseUrlEnabled.value = false
@@ -3070,6 +3085,7 @@ function loadQuotaControlSettings(account: Account) {
   // 加载遥测隐私保护开关
   if (account.telemetry_privacy_enabled === true) {
     telemetryPrivacyEnabled.value = true
+    telemetryPrivacyCLIVersion.value = account.telemetry_privacy_cli_version || ''
   }
 
   // Load cache TTL override setting
@@ -3583,8 +3599,16 @@ const handleSubmit = async () => {
       // 遥测隐私保护开关
       if (telemetryPrivacyEnabled.value) {
         newExtra.telemetry_privacy_enabled = true
+        // 自定义伪装 CLI 版本号
+        const cliVersion = telemetryPrivacyCLIVersion.value.trim()
+        if (cliVersion) {
+          newExtra.telemetry_privacy_cli_version = cliVersion
+        } else {
+          delete newExtra.telemetry_privacy_cli_version
+        }
       } else {
         delete newExtra.telemetry_privacy_enabled
+        delete newExtra.telemetry_privacy_cli_version
       }
 
       // Cache TTL override setting

@@ -271,6 +271,10 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 			enabled := true
 			out.TelemetryPrivacyEnabled = &enabled
 			out.TelemetryPrivacyProtectedCount = a.GetTelemetryPrivacyProtectedCount()
+			// 自定义伪装 CLI 版本号（三段式 semver，如 2.1.128）
+			if v := a.GetTelemetryPrivacyCLIVersion(); v != "" {
+				out.TelemetryPrivacyCLIVersion = &v
+			}
 		}
 		// 缓存 TTL 强制替换
 		if a.IsCacheTTLOverrideEnabled() {

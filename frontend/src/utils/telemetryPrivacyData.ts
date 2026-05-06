@@ -2,7 +2,8 @@ import type { AdminDataAccount, AdminDataPayload } from '@/types'
 
 const TELEMETRY_PRIVACY_EXPORT_KEYS = [
   'telemetry_privacy_enabled',
-  'telemetry_privacy_protected_count'
+  'telemetry_privacy_protected_count',
+  'telemetry_privacy_cli_version'
 ] as const
 
 // 判断账号迁移数据是否属于遥测隐私保护的目标范围。

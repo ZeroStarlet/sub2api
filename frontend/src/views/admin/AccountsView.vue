@@ -882,6 +882,7 @@ const shouldReplaceAutoRefreshRow = (current: Account, next: Account) => {
     current.temp_unschedulable_until !== next.temp_unschedulable_until ||
     current.telemetry_privacy_enabled !== next.telemetry_privacy_enabled ||
     current.telemetry_privacy_protected_count !== next.telemetry_privacy_protected_count ||
+    current.telemetry_privacy_cli_version !== next.telemetry_privacy_cli_version ||
     buildOpenAIUsageRefreshKey(current) !== buildOpenAIUsageRefreshKey(next)
   )
 }

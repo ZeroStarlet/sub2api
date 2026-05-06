@@ -833,6 +833,8 @@ export interface Account {
   // 启用后向上游发送账号级单一匿名遥测身份，不透传真实客户端设备、账号 UUID 和会话 ID
   telemetry_privacy_enabled?: boolean | null
   telemetry_privacy_protected_count?: number | null
+  // 自定义伪装 CLI 版本号（三段式 semver，如 2.1.128），留空时使用内置当前版本
+  telemetry_privacy_cli_version?: string | null
 
   // 缓存 TTL 强制替换（仅 Anthropic OAuth/SetupToken 账号有效）
   cache_ttl_override_enabled?: boolean | null

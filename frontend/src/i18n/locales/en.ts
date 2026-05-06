@@ -3066,8 +3066,11 @@ export default {
           hint: 'When enabled, fixes the session ID in metadata.user_id for 15 minutes, making upstream think requests come from the same session'
         },
         telemetryPrivacy: {
-          label: '遥测隐私保护',
-          hint: '启用后向上游发送账号级单一匿名遥测身份，不透传真实客户端设备、账号 UUID 和会话 ID，避免被识别为大量用户共享'
+          label: 'Telemetry Privacy Protection',
+          hint: 'When enabled, sends account-level anonymous telemetry identity upstream, hiding real client device, account UUID, and session ID to prevent detection as multiple users sharing one account',
+          cliVersionLabel: 'Spoofed CLI Version',
+          cliVersionPlaceholder: 'e.g. 2.1.128, leave empty for built-in default',
+          cliVersionHint: 'Custom CLI version sent to upstream in cc_version / User-Agent (three-segment semver). All requests from this upstream account will use this version for consistent telemetry fingerprinting'
         },
         cacheTTLOverride: {
           label: 'Cache TTL Override',

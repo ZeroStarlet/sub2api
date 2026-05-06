@@ -3208,7 +3208,10 @@ export default {
         },
         telemetryPrivacy: {
           label: '遥测隐私保护',
-          hint: '启用后向上游发送账号级单一匿名遥测身份，不透传真实客户端设备、账号 UUID 和会话 ID，避免被识别为大量用户共享'
+          hint: '启用后向上游发送账号级单一匿名遥测身份，不透传真实客户端设备、账号 UUID 和会话 ID，避免被识别为大量用户共享',
+          cliVersionLabel: '伪装 CLI 版本号',
+          cliVersionPlaceholder: '例如 2.1.128，留空使用内置当前版本',
+          cliVersionHint: '自定义发送给上游的 cc_version / User-Agent 中的 CLI 版本号（三段式 semver）。同一上游账号的所有请求将使用此版本号，确保遥测指纹一致'
         },
         cacheTTLOverride: {
           label: '缓存 TTL 强制替换',

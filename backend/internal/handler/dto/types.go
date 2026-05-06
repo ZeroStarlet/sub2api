@@ -212,6 +212,9 @@ type Account struct {
 	TelemetryPrivacyEnabled *bool `json:"telemetry_privacy_enabled,omitempty"`
 	// 遥测隐私保护累计次数（仅保存聚合计数，不保存任何客户端身份信息）
 	TelemetryPrivacyProtectedCount int64 `json:"telemetry_privacy_protected_count,omitempty"`
+	// 遥测隐私保护自定义伪装 CLI 版本号（三段式 semver，如 2.1.128）
+	// 留空时默认使用内置当前 CLI 版本，与 cc_version、User-Agent 三处一致
+	TelemetryPrivacyCLIVersion *string `json:"telemetry_privacy_cli_version,omitempty"`
 
 	// 缓存 TTL 强制替换（仅 Anthropic OAuth/SetupToken 账号有效）
 	// 启用后将所有 cache creation tokens 归入指定的 TTL 类型计费
