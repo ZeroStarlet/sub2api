@@ -787,20 +787,20 @@ func TestGatewayService_BuildUpstreamRequest_LogsTelemetryPrivacyMissingUserIDAs
 	require.Len(t, sink.events, 1)
 
 	bodyAfter := telemetryPrivacyReadRequestBody(t, req)
-	require.False(t, gjson.GetBytes(bodyAfter, "metadata.user_id").Exists())
+	require.True(t, gjson.GetBytes(bodyAfter, "metadata.user_id").Exists(), "注入后正文应包含 metadata.user_id")
 
 	event := sink.events[0]
 	require.Equal(t, true, event.Fields["protection_success"])
-	require.Equal(t, false, event.Fields["body_protected"])
+	require.Equal(t, true, event.Fields["body_protected"])
 	require.Equal(t, true, event.Fields["body_privacy_protection_pass"])
-	require.Equal(t, false, event.Fields["body_rewritten"])
-	require.Equal(t, "metadata.user_id 缺失，未新增遥测身份", event.Fields["body_result"])
-	require.Equal(t, false, event.Fields["metadata_user_id_present"])
+	require.Equal(t, true, event.Fields["body_rewritten"])
+	require.Equal(t, "metadata.user_id 缺失，已注入账号级匿名遥测身份", event.Fields["body_result"])
+	require.Equal(t, true, event.Fields["metadata_user_id_present"])
 	require.Equal(t, true, event.Fields["metadata_user_id_absent_safe"])
-	require.Equal(t, "缺失时不新增遥测身份", event.Fields["metadata_user_id_absent_policy"])
-	require.Equal(t, false, event.Fields["metadata_user_id_check_applicable"])
-	require.Equal(t, false, event.Fields["metadata_user_id_processed"])
-	require.Equal(t, false, event.Fields["metadata_user_id_protection_pass"])
+	require.Equal(t, "缺失时注入账号级匿名遥测身份", event.Fields["metadata_user_id_absent_policy"])
+	require.Equal(t, true, event.Fields["metadata_user_id_check_applicable"])
+	require.Equal(t, true, event.Fields["metadata_user_id_processed"])
+	require.Equal(t, true, event.Fields["metadata_user_id_protection_pass"])
 	require.Equal(t, true, event.Fields["header_privacy_protection_pass"])
 	require.Equal(t, true, event.Fields["tls_privacy_protection_pass"])
 	require.Equal(t, true, event.Fields["raw_values_logged"])
@@ -812,12 +812,12 @@ func TestGatewayService_BuildUpstreamRequest_LogsTelemetryPrivacyMissingUserIDAs
 	require.Equal(t, "123e4567-e89b-12d3-a456-426614174000", event.Fields["raw_x_claude_code_session_id"])
 	require.Equal(t, "client-request-id-real", event.Fields["raw_x_client_request_id"])
 	require.Equal(t, true, event.Fields["derived_values_logged"])
-	require.Equal(t, "", event.Fields["derived_metadata_user_id"])
+	require.Equal(t, formatAnthropicTelemetryPrivacyUserID(account), event.Fields["derived_metadata_user_id"])
 	require.Equal(t, formatAnthropicTelemetryPrivacyUserID(account), event.Fields["derived_metadata_user_id_candidate"])
-	require.Equal(t, false, event.Fields["derived_metadata_user_id_upstream"])
-	require.Equal(t, "", event.Fields["derived_device_id"])
+	require.Equal(t, true, event.Fields["derived_metadata_user_id_upstream"])
+	require.Equal(t, anthropicTelemetryPrivacyDeviceID(account), event.Fields["derived_device_id"])
 	require.Equal(t, anthropicTelemetryPrivacyDeviceID(account), event.Fields["derived_device_id_candidate"])
-	require.Equal(t, "", event.Fields["derived_session_id"])
+	require.Equal(t, anthropicTelemetryPrivacySessionID(account), event.Fields["derived_session_id"])
 	require.Equal(t, anthropicTelemetryPrivacySessionID(account), event.Fields["derived_session_id_candidate"])
 	require.Equal(t, anthropicTelemetryPrivacySessionID(account), event.Fields["derived_x_claude_code_session_id"])
 	require.Equal(t, getHeaderRaw(req.Header, "x-client-request-id"), event.Fields["derived_x_client_request_id"])
@@ -924,7 +924,7 @@ func TestGatewayService_RecordTelemetryPrivacyLogsTLSOnlyProtection(t *testing.T
 	account := telemetryPrivacyAnthropicAccount()
 	svc := &GatewayService{}
 	bodyAudit := anthropicTelemetryPrivacyBodyAudit{
-		Result: "metadata.user_id 缺失，未新增遥测身份",
+		Result: "metadata.user_id 缺失，已注入账号级匿名遥测身份",
 	}
 	headerAudit := anthropicTelemetryPrivacyHeaderAudit{
 		Result:                          "header 指纹已保护",

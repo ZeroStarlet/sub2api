@@ -1447,6 +1447,7 @@ type anthropicTelemetryPrivacyDerivedValues struct {
 }
 
 type anthropicTelemetryPrivacyRawValues struct {
+	MetadataUserIDPresent   bool   // GJSON user_id 字段是否存在（含值为空字符串的场景）
 	MetadataUserID           string
 	MetadataUserIDParsed     bool
 	MetadataUserIDFormat     string
@@ -1476,7 +1477,8 @@ type anthropicTelemetryPrivacyRawValues struct {
 //
 // 处理边界：
 //   - 仅 Anthropic OAuth/SetupToken 且 extra.telemetry_privacy_enabled=true 时生效。
-//   - metadata.user_id 缺失时不额外新增遥测身份，避免给本来没有遥测标识的请求制造新标识。
+//   - metadata.user_id 缺失时注入由账号 ID 派生的匿名遥测身份，确保所有请求保持
+//     与真实 Claude Code 客户端一致的外观，避免缺失形成上游异常检测信号。
 //   - metadata.user_id 已存在但不是字符串或格式不符合 Claude Code 约定时，按隐私优先原则直接
 //     替换为账号级匿名标识；这样即使客户端格式异常，也不会把原始用户标识透传给上游。
 //   - account_uuid 始终写为空字符串；它对认证无影响，但会暴露真实 Anthropic 账号。
@@ -1502,12 +1504,12 @@ func sanitizeAnthropicTelemetryPrivacyBodyWithAudit(body []byte, account *Accoun
 	if account == nil || !account.IsTelemetryPrivacyEnabled() {
 		return body, nil, audit
 	}
-	audit.Result = "metadata.user_id 缺失，未新增遥测身份"
-
 	userIDResult := gjson.GetBytes(body, "metadata.user_id")
 	if !userIDResult.Exists() {
-		audit.MetadataUserIDPresent = userIDResult.Exists()
-		return body, nil, audit
+		// 遥测隐私开启时注入匿名 metadata.user_id，保持与真实 Claude Code 客户端一致的外观。
+		// 真实 CC 客户端始终携带 metadata.user_id，缺失会形成上游异常检测信号；
+		// 注入的值由账号 ID 派生，不关联真实客户端设备或会话。
+		return replaceAnthropicTelemetryPrivacyUserID(body, account, &audit, "metadata.user_id 缺失，已注入账号级匿名遥测身份")
 	}
 	if userIDResult.Type != gjson.String {
 		audit.MetadataUserIDPresent = true
@@ -1543,8 +1545,8 @@ func sanitizeAnthropicTelemetryPrivacyBodyWithAudit(body []byte, account *Accoun
 	return replaceAnthropicTelemetryPrivacyUserID(body, account, &audit, "metadata.user_id 已替换为账号级匿名遥测身份")
 }
 
-// replaceAnthropicTelemetryPrivacyUserID 将已存在的 metadata.user_id 替换为账号级匿名值。
-// 调用方负责确认字段存在；本函数负责统一写入、复查最终格式并填充审计结果。successResult 只能传
+// replaceAnthropicTelemetryPrivacyUserID 将 metadata.user_id 替换或注入为账号级匿名值。
+// 调用方负责确认需要改写；本函数负责统一写入、复查最终格式并填充审计结果。successResult 只能传
 // 固定原因文本，不能拼接原始 metadata.user_id 或任何派生后的 device/session 值。
 func replaceAnthropicTelemetryPrivacyUserID(body []byte, account *Account, audit *anthropicTelemetryPrivacyBodyAudit, successResult string) ([]byte, *ParsedUserID, anthropicTelemetryPrivacyBodyAudit) {
 	if audit == nil {
@@ -1556,6 +1558,7 @@ func replaceAnthropicTelemetryPrivacyUserID(body []byte, account *Account, audit
 		audit.Result = "metadata.user_id 写入失败"
 		return body, nil, *audit
 	}
+	audit.MetadataUserIDPresent = true // 替换或注入后正文已包含 metadata.user_id
 	newParsed := ParseMetadataUserID(newUserID)
 	fillAnthropicTelemetryPrivacyBodyAudit(audit, newParsed, account)
 	audit.BodyRewritten = true
@@ -1606,7 +1609,11 @@ func fillAnthropicTelemetryPrivacyBodyAudit(audit *anthropicTelemetryPrivacyBody
 	if audit == nil || parsed == nil || account == nil {
 		return
 	}
+	audit.MetadataUserIDPresent = true
 	audit.MetadataUserIDFinalValid = true
+	audit.MetadataDeviceIDPresent = parsed.DeviceID != ""
+	audit.MetadataAccountUUIDPresent = parsed.AccountUUID != ""
+	audit.MetadataSessionIDPresent = parsed.SessionID != ""
 	audit.MetadataDeviceIDProtected = parsed.DeviceID == anthropicTelemetryPrivacyDeviceID(account)
 	audit.MetadataAccountUUIDProtected = parsed.AccountUUID == anthropicTelemetryPrivacyAccountUUID(account)
 	audit.MetadataSessionIDProtected = parsed.SessionID == anthropicTelemetryPrivacySessionID(account)
@@ -1621,8 +1628,9 @@ func fillAnthropicTelemetryPrivacyBodyAudit(audit *anthropicTelemetryPrivacyBody
 
 // anthropicTelemetryPrivacyBodyProtectionPass 返回“请求正文隐私保护是否通过”的最终审计结论。
 // metadata.user_id 存在时，必须确认最终 device_id、account_uuid、session_id 和版本全部符合
-// 账号级匿名策略；metadata.user_id 缺失时，正文侧没有可清理的遥测身份，且实现刻意不新增
-// 一个上游可见身份，因此也属于正文隐私通过。这个结论只用于日志和总体校验，不改变请求正文。
+// metadata.user_id 缺失时，由于当前实现会在遥测隐私开启时注入匿名账号级身份，
+// 此时 MetadataUserIDPresent 已被设为 true 且 MetadataUserIDProtectionPass 为 true，
+// 因此缺失场景也属于正文隐私通过。这个结论只用于日志和总体校验，不改变请求正文。
 func anthropicTelemetryPrivacyBodyProtectionPass(audit anthropicTelemetryPrivacyBodyAudit) bool {
 	return !audit.MetadataUserIDPresent || audit.MetadataUserIDProtectionPass
 }
@@ -1738,6 +1746,7 @@ func buildAnthropicTelemetryPrivacyRawValues(body []byte, headers http.Header) a
 	values := anthropicTelemetryPrivacyRawValues{}
 	userIDResult := gjson.GetBytes(body, "metadata.user_id")
 	if userIDResult.Exists() {
+			values.MetadataUserIDPresent = true
 		values.MetadataUserID = strings.TrimSpace(userIDResult.String())
 		if userIDResult.Type != gjson.String {
 			values.MetadataUserID = strings.TrimSpace(userIDResult.Raw)
@@ -2050,8 +2059,8 @@ func logAnthropicTelemetryPrivacyProtection(account *Account, req *http.Request,
 		"body_rewritten":                        bodyAudit.BodyRewritten,
 		"body_result":                           bodyAudit.Result,
 		"metadata_user_id_present":              bodyAudit.MetadataUserIDPresent,
-		"metadata_user_id_absent_safe":          !bodyAudit.MetadataUserIDPresent,
-		"metadata_user_id_absent_policy":        "缺失时不新增遥测身份",
+		"metadata_user_id_absent_safe":          !rawValues.MetadataUserIDPresent,
+		"metadata_user_id_absent_policy":        "缺失时注入账号级匿名遥测身份",
 		"metadata_user_id_check_applicable":     bodyAudit.MetadataUserIDPresent,
 		"metadata_user_id_string":               bodyAudit.MetadataUserIDString,
 		"metadata_user_id_parsed":               bodyAudit.MetadataUserIDParsed,

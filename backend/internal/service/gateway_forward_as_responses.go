@@ -38,7 +38,6 @@ func (s *GatewayService) ForwardAsResponses(
 	startTime := time.Now()
 	if account != nil && account.IsTelemetryPrivacyEnabled() {
 		MarkOpsTelemetryPrivacySkipRequestBody(c)
-		captureAnthropicTelemetryPrivacyRawValues(c, body)
 	}
 
 	// 1. Parse Responses request
@@ -89,6 +88,12 @@ func (s *GatewayService) ForwardAsResponses(
 	anthropicBody, err := json.Marshal(anthropicReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshal anthropic request: %w", err)
+	}
+
+	// 遥测隐私审计快照：在 Anthropic 正文序列化完成、mimicry 尚未注入 metadata 之前采集，
+	// 确保 raw_metadata_user_id 等字段反映的是纯格式转换后的上游预备正文，不含 mimicry 注入的中间身份。
+	if account != nil && account.IsTelemetryPrivacyEnabled() {
+		captureAnthropicTelemetryPrivacyRawValues(c, anthropicBody)
 	}
 
 	// 6. Apply Claude Code mimicry for OAuth accounts (non-Claude-Code endpoints).

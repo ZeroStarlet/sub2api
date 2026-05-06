@@ -1380,7 +1380,7 @@ func telemetryPrivacyStatsBreakdownLabel(extraKey string, key string) string {
 	case "body_result":
 		switch key {
 		case "metadata.user_id 已替换为账号级匿名遥测身份",
-			"metadata.user_id 缺失，未新增遥测身份",
+			"metadata.user_id 缺失，已注入账号级匿名遥测身份",
 			"metadata.user_id 格式异常，已替换为账号级匿名遥测身份",
 			"metadata.user_id 非字符串，已替换为账号级匿名遥测身份",
 			"metadata.user_id 已处于保护状态",
