@@ -937,6 +937,17 @@ export interface OpsTelemetryPrivacyStatsBreakdownItem {
   count: number
 }
 
+export interface OpsTelemetryPrivacyStatsTimeSeriesPoint {
+  // 时间桶起始时刻（UTC），ISO 8601 格式
+  bucket_start: string
+  // 该时间桶内保护请求总数
+  total: number
+  // 该时间桶内保护成功数（正文+Header+TLS 三项全部通过）
+  success_count: number
+  // 该时间桶内保护失败数（任意一项未通过）
+  failure_count: number
+}
+
 export interface OpsTelemetryPrivacyStatsResponse {
   account_id: number
   start_time: string
@@ -974,6 +985,8 @@ export interface OpsTelemetryPrivacyStatsResponse {
   unique_derived_client_request_id_count: number
   endpoint_breakdown: OpsTelemetryPrivacyStatsBreakdownItem[]
   result_breakdown: OpsTelemetryPrivacyStatsBreakdownItem[]
+  // 时序数据：按时间桶聚合的保护量与成功率，用于绘制趋势折线图
+  time_series: OpsTelemetryPrivacyStatsTimeSeriesPoint[]
 }
 
 export interface OpsTelemetryPrivacyStatsQuery {

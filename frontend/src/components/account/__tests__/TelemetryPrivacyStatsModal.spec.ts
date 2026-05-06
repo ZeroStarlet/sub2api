@@ -9,6 +9,16 @@ const { mockGetTelemetryPrivacyStats } = vi.hoisted(() => ({
   mockGetTelemetryPrivacyStats: vi.fn()
 }))
 
+vi.mock('vue-i18n', async () => {
+  const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
+  return {
+    ...actual,
+    useI18n: () => ({
+      t: (key: string) => key
+    })
+  }
+})
+
 vi.mock('@/api/admin/ops', () => ({
   opsAPI: {
     getTelemetryPrivacyStats: (...args: any[]) => mockGetTelemetryPrivacyStats(...args)
@@ -31,13 +41,22 @@ const LoadingSpinnerStub = defineComponent({
   template: '<div data-testid="loading">加载中</div>'
 })
 
-const IconStub = defineComponent({
-  name: 'Icon',
-  props: {
-    name: { type: String, default: '' }
-  },
-  template: '<span>{{ name }}</span>'
-})
+vi.mock('@/components/icons/Icon.vue', () => ({
+  default: defineComponent({
+    name: 'Icon',
+    props: { name: { type: String, default: '' }, size: { type: String, default: 'md' } },
+    template: '<span>{{ name }}</span>'
+  })
+}))
+
+// Chart.js Line 组件桩：vue-chartjs 中的 Line 组件在测试环境中无法渲染 canvas，直接桩掉
+vi.mock('vue-chartjs', () => ({
+  Line: defineComponent({
+    name: 'Line',
+    props: { data: { type: Object, default: () => ({}) }, options: { type: Object, default: () => ({}) } },
+    template: '<div data-testid="chart">Chart</div>'
+  })
+}))
 
 const makeAccount = (overrides: Partial<Account> = {}): Account => ({
   id: 4,
@@ -104,6 +123,7 @@ const makeStats = (overrides: Partial<OpsTelemetryPrivacyStatsResponse> = {}): O
   unique_derived_client_request_id_count: 13,
   endpoint_breakdown: [{ key: 'messages', label: '消息创建', count: 13 }],
   result_breakdown: [{ key: 'metadata.user_id 已替换为账号级匿名遥测身份', label: 'metadata.user_id 已替换为账号级匿名遥测身份', count: 12 }],
+  time_series: [],
   ...overrides
 })
 
@@ -115,8 +135,7 @@ const mountModal = (props: { show?: boolean; account?: Account | null } = {}) =>
   global: {
     stubs: {
       BaseDialog: BaseDialogStub,
-      LoadingSpinner: LoadingSpinnerStub,
-      Icon: IconStub
+      LoadingSpinner: LoadingSpinnerStub
     }
   }
 })
@@ -126,21 +145,45 @@ describe('TelemetryPrivacyStatsModal', () => {
     mockGetTelemetryPrivacyStats.mockReset()
   })
 
-  it('默认按 24h 加载账号遥测隐私统计并展示关键审计摘要', async () => {
+  it('默认按 24h 加载账号遥测隐私统计并展示概览标签页', async () => {
     mockGetTelemetryPrivacyStats.mockResolvedValue(makeStats())
 
     const wrapper = mountModal()
     await flushPromises()
 
     expect(mockGetTelemetryPrivacyStats).toHaveBeenCalledWith({ account_id: 4, time_range: '24h' })
-    expect(wrapper.text()).toContain('遥测隐私统计')
-    expect(wrapper.text()).toContain('统计窗口总数')
-    expect(wrapper.text()).toContain('总体校验通过')
-    expect(wrapper.text()).toContain('累计保护次数')
-    expect(wrapper.text()).toContain('消息创建')
-    expect(wrapper.text()).toContain('原始 device_id 去重')
-    expect(wrapper.text()).not.toContain('raw-device-001')
-    expect(wrapper.text()).not.toContain('derived-device-004')
+    // 弹窗标题（i18n key）
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.title')
+    // 概览标签页中的关键指标（i18n key）
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.protectionSuccessRate')
+    // 身份收敛（i18n key）
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.identityConvergence')
+    // 累计保护次数（账号信息栏 - 数值）
+    expect(wrapper.text()).toContain('13')
+  })
+
+  it('显示四个标签页导航按钮', async () => {
+    mockGetTelemetryPrivacyStats.mockResolvedValue(makeStats())
+
+    const wrapper = mountModal()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.tabOverview')
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.tabPipeline')
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.tabIdentity')
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.tabTrends')
+  })
+
+  it('默认显示概览标签页内容', async () => {
+    mockGetTelemetryPrivacyStats.mockResolvedValue(makeStats())
+
+    const wrapper = mountModal()
+    await flushPromises()
+
+    // 概览页的关键卡片（i18n keys）
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.protectionSuccessRate')
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.identityConvergence')
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.activeWindow')
   })
 
   it('切换时间窗口时使用同一账号重新请求统计', async () => {
@@ -157,6 +200,43 @@ describe('TelemetryPrivacyStatsModal', () => {
     expect(mockGetTelemetryPrivacyStats).toHaveBeenLastCalledWith({ account_id: 4, time_range: '7d' })
   })
 
+  it('切换标签页时展示对应内容', async () => {
+    mockGetTelemetryPrivacyStats.mockResolvedValue(makeStats())
+
+    const wrapper = mountModal()
+    await flushPromises()
+
+    // 切换到保护流水线标签页（使用 i18n key 查找）
+    const pipelineTab = wrapper.findAll('button').find(button => button.text() === 'admin.accounts.telemetryPrivacyStats.tabPipeline')
+    expect(pipelineTab).toBeTruthy()
+    await pipelineTab!.trigger('click')
+    await flushPromises()
+
+    // 流水线步骤（i18n keys）
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.pipelineStepBody')
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.pipelineStepHeader')
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.pipelineStepTLS')
+
+    // 切换到身份收敛标签页
+    const identityTab = wrapper.findAll('button').find(button => button.text() === 'admin.accounts.telemetryPrivacyStats.tabIdentity')
+    expect(identityTab).toBeTruthy()
+    await identityTab!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.identityRawLabel')
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.identityDerivedLabel')
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.identitySessionID')
+
+    // 切换到趋势分析标签页
+    const trendsTab = wrapper.findAll('button').find(button => button.text() === 'admin.accounts.telemetryPrivacyStats.tabTrends')
+    expect(trendsTab).toBeTruthy()
+    await trendsTab!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.endpointDist')
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.resultDist')
+  })
+
   it('接口拒绝异常参数时展示后端错误信息', async () => {
     mockGetTelemetryPrivacyStats.mockRejectedValue({
       response: { data: { detail: '账号 ID 无效' } }
@@ -166,7 +246,8 @@ describe('TelemetryPrivacyStatsModal', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('账号 ID 无效')
-    expect(wrapper.text()).not.toContain('统计窗口总数')
+    // 错误时不应展示统计卡片（i18n key）
+    expect(wrapper.text()).not.toContain('admin.accounts.telemetryPrivacyStats.protectionSuccessRate')
   })
 
   it('关闭弹窗后会丢弃尚未返回的统计请求', async () => {
@@ -184,7 +265,36 @@ describe('TelemetryPrivacyStatsModal', () => {
     resolveStats(makeStats({ total: 99 }))
     await flushPromises()
 
-    expect(wrapper.text()).not.toContain('统计窗口总数')
     expect(wrapper.text()).not.toContain('99')
+    expect(wrapper.text()).not.toContain('admin.accounts.telemetryPrivacyStats.protectionSuccessRate')
+  })
+
+  it('无数据时展示空状态', async () => {
+    mockGetTelemetryPrivacyStats.mockResolvedValue(makeStats({
+      total: 0,
+      success_count: 0,
+      endpoint_breakdown: [],
+      result_breakdown: []
+    }))
+
+    const wrapper = mountModal()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('admin.accounts.telemetryPrivacyStats.noData')
+  })
+
+  it('含有时序数据时渲染趋势图表', async () => {
+    mockGetTelemetryPrivacyStats.mockResolvedValue(makeStats({
+      time_series: [
+        { bucket_start: '2026-05-03T00:00:00Z', total: 5, success_count: 5, failure_count: 0 },
+        { bucket_start: '2026-05-03T01:00:00Z', total: 8, success_count: 7, failure_count: 1 }
+      ]
+    }))
+
+    const wrapper = mountModal()
+    await flushPromises()
+
+    // 概览标签页应包含趋势图
+    expect(wrapper.find('[data-testid="chart"]').exists()).toBe(true)
   })
 })

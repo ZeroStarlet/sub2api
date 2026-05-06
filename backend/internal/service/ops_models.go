@@ -62,6 +62,23 @@ type OpsTelemetryPrivacyStats struct {
 
 	EndpointBreakdown []OpsTelemetryPrivacyStatsBreakdownItem `json:"endpoint_breakdown"`
 	ResultBreakdown   []OpsTelemetryPrivacyStatsBreakdownItem `json:"result_breakdown"`
+
+	// 时序数据：按时间桶聚合的保护量与成功率，用于前端绘制趋势折线图
+	// 时间桶粒度取决于查询窗口：1h/6h/24h 用小时桶，7d/30d 用天桶
+	TimeSeries []OpsTelemetryPrivacyStatsTimeSeriesPoint `json:"time_series"`
+}
+
+// OpsTelemetryPrivacyStatsTimeSeriesPoint 遥测隐私保护时序数据点
+// 每个数据点代表一个时间桶内的聚合统计，用于前端绘制保护量趋势图与成功率曲线
+type OpsTelemetryPrivacyStatsTimeSeriesPoint struct {
+	// 时间桶起始时刻（UTC），前端根据所选时间范围格式化显示
+	BucketStart time.Time `json:"bucket_start"`
+	// 该时间桶内保护请求总数
+	Total int64 `json:"total"`
+	// 该时间桶内保护成功数（正文+Header+TLS 三项全部通过）
+	SuccessCount int64 `json:"success_count"`
+	// 该时间桶内保护失败数（任意一项未通过）
+	FailureCount int64 `json:"failure_count"`
 }
 
 type OpsErrorLog struct {

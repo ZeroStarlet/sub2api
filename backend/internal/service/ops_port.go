@@ -14,6 +14,7 @@ type OpsRepository interface {
 	BatchInsertSystemLogs(ctx context.Context, inputs []*OpsInsertSystemLogInput) (int64, error)
 	ListSystemLogs(ctx context.Context, filter *OpsSystemLogFilter) (*OpsSystemLogList, error)
 	GetTelemetryPrivacyStats(ctx context.Context, filter *OpsTelemetryPrivacyStatsFilter) (*OpsTelemetryPrivacyStats, error)
+	GetTelemetryPrivacyStatsTimeSeries(ctx context.Context, filter *OpsTelemetryPrivacyStatsFilter) ([]OpsTelemetryPrivacyStatsTimeSeriesPoint, error)
 	DeleteSystemLogs(ctx context.Context, filter *OpsSystemLogCleanupFilter) (int64, error)
 	InsertSystemLogCleanupAudit(ctx context.Context, input *OpsSystemLogCleanupAudit) error
 

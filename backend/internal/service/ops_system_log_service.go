@@ -65,9 +65,10 @@ func (s *OpsService) GetTelemetryPrivacyStats(ctx context.Context, filter *OpsTe
 	}
 	if s.opsRepo == nil {
 		return &OpsTelemetryPrivacyStats{
-			AccountID: filter.AccountID,
-			StartTime: filter.StartTime.UTC(),
-			EndTime:   filter.EndTime.UTC(),
+			AccountID:  filter.AccountID,
+			StartTime:  filter.StartTime.UTC(),
+			EndTime:    filter.EndTime.UTC(),
+			TimeSeries: []OpsTelemetryPrivacyStatsTimeSeriesPoint{},
 		}, nil
 	}
 	stats, err := s.opsRepo.GetTelemetryPrivacyStats(ctx, filter)
@@ -80,6 +81,16 @@ func (s *OpsService) GetTelemetryPrivacyStats(ctx context.Context, filter *OpsTe
 	stats.AccountID = filter.AccountID
 	stats.StartTime = filter.StartTime.UTC()
 	stats.EndTime = filter.EndTime.UTC()
+
+	// 同时加载时序数据，供前端绘制保护量趋势折线图；时序查询失败不阻断主统计返回
+	timeSeries, tsErr := s.opsRepo.GetTelemetryPrivacyStatsTimeSeries(ctx, filter)
+	if tsErr != nil {
+		log.Printf("[ops] 遥测隐私时序数据加载失败 account=%d: %v", filter.AccountID, tsErr)
+		stats.TimeSeries = []OpsTelemetryPrivacyStatsTimeSeriesPoint{}
+	} else {
+		stats.TimeSeries = timeSeries
+	}
+
 	return stats, nil
 }
 

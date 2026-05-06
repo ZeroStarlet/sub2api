@@ -1396,6 +1396,61 @@ func telemetryPrivacyStatsBreakdownLabel(extraKey string, key string) string {
 	return key
 }
 
+// GetTelemetryPrivacyStatsTimeSeries 按时间桶聚合遥测隐私保护量时序数据
+// 时间桶粒度自适应：窗口 ≤24h 使用小时桶（date_trunc('hour')），>24h 使用天桶（date_trunc('day')）
+// 返回按 bucket_start ASC 排序的时间序列数据点，供前端绘制保护量趋势折线图
+func (r *opsRepository) GetTelemetryPrivacyStatsTimeSeries(ctx context.Context, filter *service.OpsTelemetryPrivacyStatsFilter) ([]service.OpsTelemetryPrivacyStatsTimeSeriesPoint, error) {
+	if r == nil || r.db == nil {
+		return nil, fmt.Errorf("nil ops repository")
+	}
+	if filter == nil || filter.AccountID <= 0 {
+		return nil, fmt.Errorf("invalid telemetry privacy stats filter")
+	}
+
+	// 自适应桶粒度：短窗口用小时桶可看清细节，长窗口用天桶避免数据点过密
+	truncateFn := "hour"
+	window := filter.EndTime.Sub(filter.StartTime)
+	if window > 24*time.Hour {
+		truncateFn = "day"
+	}
+
+	// 使用 AT TIME ZONE 'UTC' 确保桶边界不受数据库会话时区影响
+	// 在 timestamptz 上直接 date_trunc 会按会话时区截断，导致 UTC 窗口偏移
+	query := fmt.Sprintf(`
+SELECT
+  date_trunc('%s', l.created_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS bucket_start,
+  COUNT(*)::bigint,
+  COUNT(*) FILTER (WHERE l.extra->>'protection_success' = 'true')::bigint,
+  COUNT(*) FILTER (WHERE COALESCE(l.extra->>'protection_success','false') <> 'true')::bigint
+FROM ops_system_logs l
+WHERE l.component = 'service.gateway.audit.telemetry_privacy'
+  AND l.account_id = $1
+  AND l.platform = 'anthropic'
+  AND l.created_at >= $2
+  AND l.created_at < $3
+GROUP BY bucket_start
+ORDER BY bucket_start ASC`, truncateFn)
+
+	rows, err := r.db.QueryContext(ctx, query, filter.AccountID, filter.StartTime.UTC(), filter.EndTime.UTC())
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	points := make([]service.OpsTelemetryPrivacyStatsTimeSeriesPoint, 0)
+	for rows.Next() {
+		var p service.OpsTelemetryPrivacyStatsTimeSeriesPoint
+		if err := rows.Scan(&p.BucketStart, &p.Total, &p.SuccessCount, &p.FailureCount); err != nil {
+			return nil, err
+		}
+		points = append(points, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return points, nil
+}
+
 func (r *opsRepository) DeleteSystemLogs(ctx context.Context, filter *service.OpsSystemLogCleanupFilter) (int64, error) {
 	if r == nil || r.db == nil {
 		return 0, fmt.Errorf("nil ops repository")

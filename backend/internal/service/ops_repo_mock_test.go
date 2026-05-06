@@ -11,8 +11,9 @@ type opsRepoMock struct {
 	BatchInsertErrorLogsFn        func(ctx context.Context, inputs []*OpsInsertErrorLogInput) (int64, error)
 	BatchInsertSystemLogsFn       func(ctx context.Context, inputs []*OpsInsertSystemLogInput) (int64, error)
 	ListSystemLogsFn              func(ctx context.Context, filter *OpsSystemLogFilter) (*OpsSystemLogList, error)
-	GetTelemetryPrivacyStatsFn    func(ctx context.Context, filter *OpsTelemetryPrivacyStatsFilter) (*OpsTelemetryPrivacyStats, error)
-	DeleteSystemLogsFn            func(ctx context.Context, filter *OpsSystemLogCleanupFilter) (int64, error)
+	GetTelemetryPrivacyStatsFn          func(ctx context.Context, filter *OpsTelemetryPrivacyStatsFilter) (*OpsTelemetryPrivacyStats, error)
+	GetTelemetryPrivacyStatsTimeSeriesFn func(ctx context.Context, filter *OpsTelemetryPrivacyStatsFilter) ([]OpsTelemetryPrivacyStatsTimeSeriesPoint, error)
+	DeleteSystemLogsFn                  func(ctx context.Context, filter *OpsSystemLogCleanupFilter) (int64, error)
 	InsertSystemLogCleanupAuditFn func(ctx context.Context, input *OpsSystemLogCleanupAudit) error
 }
 
@@ -61,6 +62,13 @@ func (m *opsRepoMock) GetTelemetryPrivacyStats(ctx context.Context, filter *OpsT
 		return m.GetTelemetryPrivacyStatsFn(ctx, filter)
 	}
 	return &OpsTelemetryPrivacyStats{}, nil
+}
+
+func (m *opsRepoMock) GetTelemetryPrivacyStatsTimeSeries(ctx context.Context, filter *OpsTelemetryPrivacyStatsFilter) ([]OpsTelemetryPrivacyStatsTimeSeriesPoint, error) {
+	if m.GetTelemetryPrivacyStatsTimeSeriesFn != nil {
+		return m.GetTelemetryPrivacyStatsTimeSeriesFn(ctx, filter)
+	}
+	return []OpsTelemetryPrivacyStatsTimeSeriesPoint{}, nil
 }
 
 func (m *opsRepoMock) DeleteSystemLogs(ctx context.Context, filter *OpsSystemLogCleanupFilter) (int64, error) {
