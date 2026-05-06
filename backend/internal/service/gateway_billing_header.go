@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/cespare/xxhash/v2"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -109,7 +108,7 @@ func forceBillingCCVersionFingerprint(body []byte, account *Account) []byte {
 	}
 
 	// 使用账号 ID 派生确定性 fp，保证同一账号始终相同
-	fpInput := fmt.Sprintf("telemetry_privacy_fp:%d:%s", account.ID, claude.CLICurrentVersion)
+	fpInput := fmt.Sprintf("telemetry_privacy_fp:%d:%s", account.ID, anthropicTelemetryPrivacyCLIVersion(account))
 	sum := sha256.Sum256([]byte(fpInput))
 	fp := hex.EncodeToString(sum[:])[:3]
 	replacement := "cc_version=${1}." + fp

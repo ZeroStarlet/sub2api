@@ -21,6 +21,13 @@ import (
 // 当前仅 Anthropic OAuth/SetupToken 账号会写入，用于管理端直观看到保护功能实际生效次数。
 const AccountExtraTelemetryPrivacyProtectedCount = "telemetry_privacy_protected_count"
 
+// AccountExtraTelemetryPrivacyCLIVersion 遥测隐私保护使用的伪装 CLI 版本号（三段 semver）。
+// 留空时默认使用 claude.CLICurrentVersion。
+// 设置为有效版本号后，该账号所有上游请求的 User-Agent、billing header cc_version 和
+// metadata.user_id 版本字段都会统一使用该版本，从而形成该账号唯一的用户画像版本标识。
+// 版本号格式需与真实 Claude Code CLI 一致，例如 "2.1.128"。
+const AccountExtraTelemetryPrivacyCLIVersion = "telemetry_privacy_cli_version"
+
 type Account struct {
 	ID          int64
 	Name        string
@@ -1493,6 +1500,42 @@ func (a *Account) IsTelemetryPrivacyEnabled() bool {
 		}
 	}
 	return false
+}
+
+// GetTelemetryPrivacyCLIVersion 获取该账号遥测隐私保护使用的伪装 CLI 版本号。
+// 若 extra 中配置了 telemetry_privacy_cli_version 且为非空字符串，则使用该自定义版本；
+// 否则返回空字符串，调用方应回退到 claude.CLICurrentVersion 作为默认值。
+// 版本号仅允许三段 semver 格式（例如 "2.1.128"），不符合格式的值会被忽略并回退默认版本，
+// 避免在 User-Agent、cc_version 和 metadata.user_id 中写入畸形版本号引发上游风控。
+func (a *Account) GetTelemetryPrivacyCLIVersion() string {
+	if a == nil || a.Extra == nil {
+		return ""
+	}
+	v := a.GetExtraString(AccountExtraTelemetryPrivacyCLIVersion)
+	if v == "" {
+		return ""
+	}
+	// 三段式 semver 格式校验：仅允许无符号纯数字 N.N.N，
+	// 拒绝前导零、正负号、空格或任何非数字字符，避免畸形版本号进入上游请求。
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	for _, p := range parts {
+		if len(p) == 0 || len(p) > 10 {
+			return ""
+		}
+		// 逐字符校验：仅允许数字 0-9，拒绝正负号、空格、前导零（"0" 本身除外）
+		if p[0] == '0' && len(p) > 1 {
+			return ""
+		}
+		for _, c := range p {
+			if c < '0' || c > '9' {
+				return ""
+			}
+		}
+	}
+	return v
 }
 
 // GetTelemetryPrivacyProtectedCount 获取账号级遥测隐私保护累计次数。

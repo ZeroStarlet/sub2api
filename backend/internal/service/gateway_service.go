@@ -1372,7 +1372,7 @@ type anthropicTelemetryPrivacyBodyAudit struct {
 	MetadataAccountUUIDPresent     bool
 	MetadataSessionIDPresent       bool
 	MetadataDeviceIDProtected      bool
-	MetadataAccountUUIDCleared     bool
+	MetadataAccountUUIDProtected     bool
 	MetadataSessionIDProtected     bool
 	MetadataUserIDFinalValid       bool
 	MetadataUserIDProtectionPass   bool
@@ -1569,7 +1569,7 @@ func replaceAnthropicTelemetryPrivacyUserID(body []byte, account *Account, audit
 }
 
 func formatAnthropicTelemetryPrivacyUserID(account *Account) string {
-	return FormatMetadataUserID(anthropicTelemetryPrivacyDeviceID(account), "", anthropicTelemetryPrivacySessionID(account), claude.CLICurrentVersion)
+	return FormatMetadataUserID(anthropicTelemetryPrivacyDeviceID(account), anthropicTelemetryPrivacyAccountUUID(account), anthropicTelemetryPrivacySessionID(account), anthropicTelemetryPrivacyCLIVersion(account))
 }
 
 // anthropicTelemetryPrivacyTLSProfile 返回遥测隐私保护使用的 TLS 指纹。
@@ -1608,13 +1608,13 @@ func fillAnthropicTelemetryPrivacyBodyAudit(audit *anthropicTelemetryPrivacyBody
 	}
 	audit.MetadataUserIDFinalValid = true
 	audit.MetadataDeviceIDProtected = parsed.DeviceID == anthropicTelemetryPrivacyDeviceID(account)
-	audit.MetadataAccountUUIDCleared = parsed.AccountUUID == ""
+	audit.MetadataAccountUUIDProtected = parsed.AccountUUID == anthropicTelemetryPrivacyAccountUUID(account)
 	audit.MetadataSessionIDProtected = parsed.SessionID == anthropicTelemetryPrivacySessionID(account)
-	audit.MetadataUserIDVersionPinned = parsed.IsNewFormat == IsNewMetadataFormatVersion(claude.CLICurrentVersion)
+	audit.MetadataUserIDVersionPinned = parsed.IsNewFormat == IsNewMetadataFormatVersion(anthropicTelemetryPrivacyCLIVersion(account))
 	audit.MetadataPrivacyIdentityUnified = audit.MetadataDeviceIDProtected && audit.MetadataSessionIDProtected
 	audit.MetadataUserIDProtectionPass = audit.MetadataUserIDFinalValid &&
 		audit.MetadataDeviceIDProtected &&
-		audit.MetadataAccountUUIDCleared &&
+		audit.MetadataAccountUUIDProtected &&
 		audit.MetadataSessionIDProtected &&
 		audit.MetadataUserIDVersionPinned
 }
@@ -1648,6 +1648,32 @@ func anthropicTelemetryPrivacySessionID(account *Account) string {
 	return generateUUIDFromSeed(fmt.Sprintf("anthropic_telemetry_privacy_account_session:%d", account.ID))
 }
 
+// anthropicTelemetryPrivacyCLIVersion 返回遥测隐私保护使用的 CLI 版本号。
+// 优先读取账号 extra 中的自定义版本（AccountExtraTelemetryPrivacyCLIVersion），
+// 若未配置或格式无效则回退到 claude.CLICurrentVersion 默认值。
+// 该值用于 User-Agent、billing header cc_version 和 metadata.user_id 版本字段，
+// 确保同一账号所有请求的 CLI 版本一致。
+func anthropicTelemetryPrivacyCLIVersion(account *Account) string {
+	if v := account.GetTelemetryPrivacyCLIVersion(); v != "" {
+		return v
+	}
+	return claude.CLICurrentVersion
+}
+
+// anthropicTelemetryPrivacyAccountUUID 返回账号级确定性 account_uuid。
+// 真实 Claude Code OAuth 客户端始终在 metadata.user_id 中携带非空 account_uuid
+//（见 CC-Source/src/services/api/claude.ts:getAPIMetadata），只有 API Key 客户端才传空值。
+// 遥测隐私对 OAuth 账号若传空 account_uuid 等于自报"非真实 CC 客户端"，反而形成检测信号。
+// 本函数用账号 ID 派生确定性 UUID，既不会暴露真实 Anthropic 账号 UUID，又保持与
+// 真实 OAuth CC 客户端一致的字段形态，消除 account_uuid 缺失的异常信号。
+func anthropicTelemetryPrivacyAccountUUID(account *Account) string {
+	if account == nil {
+		return generateUUIDFromSeed("")
+	}
+	return generateUUIDFromSeed(fmt.Sprintf("anthropic_telemetry_privacy_account_uuid:%d", account.ID))
+}
+
+
 // buildAnthropicTelemetryPrivacyDerivedValues 返回最终会上游可见的账号级伪装值。
 // 这些值不是客户端原始值，而是由 sub2api 账号 ID、内置 Claude Code 默认头指纹和固定
 // TLS profile 派生；因此可用于管理员在系统日志中核对“同一账号是否始终同一身份指纹”。
@@ -1661,11 +1687,11 @@ func buildAnthropicTelemetryPrivacyDerivedValues(account *Account, req *http.Req
 		MetadataUserIDCandidate:   metadataUserIDCandidate,
 		MetadataUserIDUpstream:    bodyAudit.MetadataUserIDProtectionPass,
 		DeviceIDCandidate:         deviceID,
-		AccountUUID:               "",
-		AccountUUIDCandidate:      "",
+		AccountUUID:               anthropicTelemetryPrivacyAccountUUID(account),
+		AccountUUIDCandidate:      anthropicTelemetryPrivacyAccountUUID(account),
 		SessionIDCandidate:        sessionID,
 		XClaudeCodeSessionID:      sessionID,
-		UserAgent:                 claude.DefaultHeaders["User-Agent"],
+		UserAgent:                 "claude-cli/" + anthropicTelemetryPrivacyCLIVersion(account) + " (external, cli)",
 		Accept:                    "application/json",
 		XApp:                      claude.DefaultHeaders["X-App"],
 		DirectBrowserAccess:       claude.DefaultHeaders["Anthropic-Dangerous-Direct-Browser-Access"],
@@ -1683,6 +1709,7 @@ func buildAnthropicTelemetryPrivacyDerivedValues(account *Account, req *http.Req
 		values.MetadataUserID = metadataUserIDCandidate
 		values.DeviceID = deviceID
 		values.SessionID = sessionID
+		values.AccountUUID = anthropicTelemetryPrivacyAccountUUID(account)
 	}
 	if req != nil {
 		values.XClaudeCodeSessionID = getHeaderRaw(req.Header, "X-Claude-Code-Session-Id")
@@ -1815,6 +1842,27 @@ func sanitizeAnthropicTelemetryPrivacyHeadersWithAudit(req *http.Request, accoun
 	contentTypeBefore := getHeaderRaw(req.Header, "content-type")
 
 	protected, _ := applyAnthropicTelemetryPrivacyHeaderFingerprintWithAudit(req, &audit)
+	// 遥测隐私：用账号级自定义 CLI 版本覆盖 DefaultHeaders 中的默认 User-Agent，
+	// 确保同一账号所有请求的 CLI 版本一致，且与 billing header cc_version 同步
+	setHeaderRaw(req.Header, "User-Agent", "claude-cli/"+anthropicTelemetryPrivacyCLIVersion(account)+" (external, cli)")
+	// 因为 applyAnthropicTelemetryPrivacyHeaderFingerprintWithAudit 内部的审计字段
+	// 是以 claude.DefaultHeaders 为基准计算的，而自定义 CLI 版本会使用不同的
+	// User-Agent，因此必须在覆盖后重新计算受影响的聚合审计字段，避免管理员
+	// 因 stale 审计字段误判“header 指纹保护未通过”。
+	audit.UserAgentFinalDefault = getHeaderRaw(req.Header, "User-Agent") == "claude-cli/"+anthropicTelemetryPrivacyCLIVersion(account)+" (external, cli)"
+	audit.HeaderFingerprintFinalDefault = audit.DefaultHeaderTotal > 0 &&
+			audit.DefaultHeaderFinalMatchCount == audit.DefaultHeaderTotal &&
+			audit.AcceptHeaderFinalDefault &&
+			audit.UserAgentFinalDefault &&
+			audit.XStainlessFinalDefault &&
+			audit.XAppFinalDefault &&
+			audit.DirectBrowserAccessFinalDefault
+	audit.HeaderPrivacyProtectionPass = audit.HeaderFingerprintFinalDefault &&
+			audit.SessionHeaderFinalProtected &&
+			audit.ClientRequestIDRegenerated &&
+			audit.AuthorizationPreserved &&
+			audit.AnthropicBetaPreserved &&
+			audit.ContentTypePreserved
 	sessionHeaderBefore := getHeaderRaw(req.Header, "X-Claude-Code-Session-Id")
 	audit.SessionHeaderPresent = sessionHeaderBefore != ""
 	sessionID := ""
@@ -2015,8 +2063,8 @@ func logAnthropicTelemetryPrivacyProtection(account *Account, req *http.Request,
 		"metadata_device_id_protected":          bodyAudit.MetadataDeviceIDProtected,
 		"metadata_device_id_strategy":           "按账号编号派生稳定哈希",
 		"metadata_account_uuid_present":         bodyAudit.MetadataAccountUUIDPresent,
-		"metadata_account_uuid_cleared":         bodyAudit.MetadataAccountUUIDCleared,
-		"metadata_account_uuid_strategy":        "清空",
+		"metadata_account_uuid_protected":         bodyAudit.MetadataAccountUUIDProtected,
+		"metadata_account_uuid_strategy":        "按账号编号派生确定性UUID，不传真实Anthropic账号UUID也不留空",
 		"metadata_session_id_present":           bodyAudit.MetadataSessionIDPresent,
 		"metadata_session_id_protected":         bodyAudit.MetadataSessionIDProtected,
 		"metadata_session_id_strategy":          "按账号编号派生单一稳定会话",
@@ -6814,7 +6862,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 
 	// 同步 billing header cc_version 与实际发送的 User-Agent 版本
 	if account.IsTelemetryPrivacyEnabled() {
-		body = syncBillingHeaderVersion(body, claude.DefaultHeaders["User-Agent"])
+		body = syncBillingHeaderVersion(body, "claude-cli/"+anthropicTelemetryPrivacyCLIVersion(account)+" (external, cli)")
 	} else if fingerprint != nil {
 		body = syncBillingHeaderVersion(body, fingerprint.UserAgent)
 	}
@@ -10017,7 +10065,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 
 	// 同步 billing header cc_version 与实际发送的 User-Agent 版本
 	if account.IsTelemetryPrivacyEnabled() {
-		body = syncBillingHeaderVersion(body, claude.DefaultHeaders["User-Agent"])
+		body = syncBillingHeaderVersion(body, "claude-cli/"+anthropicTelemetryPrivacyCLIVersion(account)+" (external, cli)")
 	} else if ctFingerprint != nil && ctEnableFP {
 		body = syncBillingHeaderVersion(body, ctFingerprint.UserAgent)
 	}
