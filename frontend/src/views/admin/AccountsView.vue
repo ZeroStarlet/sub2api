@@ -237,9 +237,8 @@
                   {{ getAntigravityTierLabel(row) }}
                 </span>
               </div>
-              <div class="flex flex-wrap items-center gap-1">
+              <div v-if="isTelemetryPrivacyVisible(row)" class="flex flex-wrap items-center gap-1">
                 <span
-                  v-if="isTelemetryPrivacyVisible(row)"
                   class="inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/35 dark:text-emerald-300"
                   :title="t('admin.accounts.telemetryPrivacyProtectedCount', { count: getTelemetryPrivacyProtectedCount(row) })"
                 >
@@ -247,7 +246,6 @@
                   {{ t('admin.accounts.telemetryPrivacyProtectedShort', { count: getTelemetryPrivacyProtectedCount(row) }) }}
                 </span>
                 <button
-                  v-if="isTelemetryPrivacyVisible(row)"
                   type="button"
                   class="inline-flex items-center gap-1 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 hover:bg-blue-200 dark:bg-blue-900/35 dark:text-blue-300 dark:hover:bg-blue-900/55"
                   :title="t('admin.accounts.telemetryPrivacyStatsTitle')"
@@ -257,7 +255,6 @@
                   {{ t('admin.accounts.telemetryPrivacyStatsShort') }}
                 </button>
                 <a
-                  v-if="isTelemetryPrivacyVisible(row)"
                   :href="getTelemetryPrivacyLogURL(row)"
                   class="inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-700 hover:bg-gray-200 dark:bg-dark-700 dark:text-gray-200 dark:hover:bg-dark-600"
                   :title="t('admin.accounts.telemetryPrivacyLogsTitle')"
