@@ -9483,6 +9483,10 @@ func (s *GatewayService) buildRecordUsageLog(
 ) *UsageLog {
 	durationMs := int(result.Duration.Milliseconds())
 	requestID := resolveUsageBillingRequestID(ctx, result.RequestID)
+	// 遥测隐私开关：仅 Anthropic OAuth/SetupToken 且账号 extra.telemetry_privacy_enabled=true 时
+	// 才会清空 usage_logs.user_agent 与 usage_logs.ip_address，使本地数据库不再持久化客户端可识别
+	// 字段；其它账号原值不变，保持现有 dashboard、CSV 导出等审计链路完全兼容。
+	storedUserAgent, storedIPAddress := redactUsageLogIdentityForTelemetryPrivacy(account, input.UserAgent, input.IPAddress)
 	usageLog := &UsageLog{
 		UserID:                user.ID,
 		APIKeyID:              apiKey.ID,
@@ -9513,8 +9517,8 @@ func (s *GatewayService) buildRecordUsageLog(
 		CacheTTLOverridden:    cacheTTLOverridden,
 		ChannelID:             optionalInt64Ptr(input.ChannelID),
 		ModelMappingChain:     optionalTrimmedStringPtr(input.ModelMappingChain),
-		UserAgent:             optionalTrimmedStringPtr(input.UserAgent),
-		IPAddress:             optionalTrimmedStringPtr(input.IPAddress),
+		UserAgent:             optionalTrimmedStringPtr(storedUserAgent),
+		IPAddress:             optionalTrimmedStringPtr(storedIPAddress),
 		GroupID:               apiKey.GroupID,
 		SubscriptionID:        optionalSubscriptionID(subscription),
 		CreatedAt:             time.Now(),
