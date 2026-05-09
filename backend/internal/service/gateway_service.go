@@ -1527,7 +1527,7 @@ func sanitizeAnthropicTelemetryPrivacyBody(body []byte, account *Account) ([]byt
 // sanitizeAnthropicTelemetryPrivacyBodyWithAudit 返回请求正文保护的审计结果。
 // 该函数只负责改写请求正文并产出布尔校验、格式判断和原因码，不直接写系统日志；
 // 原始值和派生值由调用方在改写前后分别采集，最终统一写入管理员系统日志。这样可以保证
-// "原始客户端输入"和"最终上游输出"不会混在同一个阶段里，便于排查同一账号是否稳定收敛。
+// “原始客户端输入”和“最终上游输出”不会混在同一个阶段里，便于排查同一账号是否稳定收敛。
 // 注意：这里仍不得保存模型、消息正文或 token，它们不属于遥测身份保护的必要审计材料。
 func sanitizeAnthropicTelemetryPrivacyBodyWithAudit(body []byte, account *Account) ([]byte, *ParsedUserID, anthropicTelemetryPrivacyBodyAudit) {
 	audit := anthropicTelemetryPrivacyBodyAudit{
@@ -1613,7 +1613,7 @@ func formatAnthropicTelemetryPrivacyUserID(account *Account) string {
 
 // anthropicTelemetryPrivacyTLSProfile 返回遥测隐私保护使用的 TLS 指纹。
 // 隐私保护开启时必须使用内置 Node.js/Claude Code 默认 Profile，不能沿用账号自定义或随机模板：
-// 自定义/随机模板会让同一个上游账号呈现额外 TLS 身份差异，和"不要让上游觉得很多人在用"冲突。
+// 自定义/随机模板会让同一个上游账号呈现额外 TLS 身份差异，和“不要让上游觉得很多人在用”冲突。
 func anthropicTelemetryPrivacyTLSProfile(account *Account) (*tlsfingerprint.Profile, anthropicTelemetryPrivacyTLSAudit) {
 	audit := anthropicTelemetryPrivacyTLSAudit{
 		Result: "未启用遥测隐私保护",
@@ -1676,7 +1676,7 @@ func fillAnthropicTelemetryPrivacyBillingAudit(audit *anthropicTelemetryPrivacyB
 	audit.BillingWorkloadStripped = extractBillingHeaderField(finalBody, "cc_workload") == ""
 }
 
-// anthropicTelemetryPrivacyBodyProtectionPass 返回"请求正文隐私保护是否通过"的最终审计结论。
+// anthropicTelemetryPrivacyBodyProtectionPass 返回“请求正文隐私保护是否通过”的最终审计结论。
 // metadata.user_id 存在时，必须确认最终 device_id、account_uuid、session_id 和版本全部符合
 // metadata.user_id 缺失时，由于当前实现会在遥测隐私开启时注入匿名账号级身份，
 // 此时 MetadataUserIDPresent 已被设为 true 且 MetadataUserIDProtectionPass 为 true，
@@ -1738,7 +1738,7 @@ func anthropicTelemetryPrivacyAccountUUID(account *Account) string {
 
 // buildAnthropicTelemetryPrivacyDerivedValues 返回最终会上游可见的账号级伪装值。
 // 这些值不是客户端原始值，而是由 sub2api 账号 ID、内置 Claude Code 默认头指纹和固定
-// TLS profile 派生；因此可用于管理员在系统日志中核对"同一账号是否始终同一身份指纹"。
+// TLS profile 派生；因此可用于管理员在系统日志中核对“同一账号是否始终同一身份指纹”。
 // 注意：本函数只从已经完成隐私覆盖的上游请求读取最终 header，不读取请求正文、认证 token
 // 或下游用户信息；metadata.user_id、device_id 和 session_id 只能来自账号级派生函数。
 func buildAnthropicTelemetryPrivacyDerivedValues(account *Account, req *http.Request, bodyAudit anthropicTelemetryPrivacyBodyAudit) anthropicTelemetryPrivacyDerivedValues {
@@ -1844,7 +1844,7 @@ func buildAnthropicTelemetryPrivacyRawValues(body []byte, headers http.Header) a
 // captureAnthropicTelemetryPrivacyRawValues 在真正的客户端入口处保存 raw_* 审计快照。
 // 主 /v1/messages、count_tokens 和 OpenAI 兼容入口在进入 mimicry、模型映射、cache_control 改写、
 // metadata 注入之前调用本函数；后续构建上游请求时只能复用该快照，避免把中间态误记为
-// "客户端原始值"。当 c 为 nil 时返回快照但无法缓存，调用方后续会退化为就地采集。
+// “客户端原始值”。当 c 为 nil 时返回快照但无法缓存，调用方后续会退化为就地采集。
 func captureAnthropicTelemetryPrivacyRawValues(c *gin.Context, body []byte) anthropicTelemetryPrivacyRawValues {
 	headers := http.Header{}
 	if c != nil && c.Request != nil {
@@ -1889,7 +1889,7 @@ func sanitizeAnthropicTelemetryPrivacyHeaders(req *http.Request, account *Accoun
 // sanitizeAnthropicTelemetryPrivacyHeadersWithAudit 记录 header 保护是否真实落地。
 // 它只比较处理前后的状态并输出布尔结论，不负责写具体 header 值；具体 raw/derived 值由
 // buildAnthropicTelemetryPrivacyRawValues 和 buildAnthropicTelemetryPrivacyDerivedValues 分阶段采集。
-// 这样 header 覆盖逻辑只关心"是否保护成功"，日志逻辑只关心"管理员需要看到什么审计值"，
+// 这样 header 覆盖逻辑只关心“是否保护成功”，日志逻辑只关心“管理员需要看到什么审计值”，
 // 避免在同一个函数里混入改写、副作用和日志策略。
 func sanitizeAnthropicTelemetryPrivacyHeadersWithAudit(req *http.Request, account *Account, userID *ParsedUserID) (bool, anthropicTelemetryPrivacyHeaderAudit) {
 	audit := anthropicTelemetryPrivacyHeaderAudit{
@@ -1914,7 +1914,7 @@ func sanitizeAnthropicTelemetryPrivacyHeadersWithAudit(req *http.Request, accoun
 	// 因为 applyAnthropicTelemetryPrivacyHeaderFingerprintWithAudit 内部的审计字段
 	// 是以 claude.DefaultHeaders 为基准计算的，而自定义 CLI 版本会使用不同的
 	// User-Agent，因此必须在覆盖后重新计算受影响的聚合审计字段，避免管理员
-	// 因 stale 审计字段误判"header 指纹保护未通过"。
+	// 因 stale 审计字段误判“header 指纹保护未通过”。
 	audit.UserAgentFinalDefault = getHeaderRaw(req.Header, "User-Agent") == "claude-cli/"+anthropicTelemetryPrivacyCLIVersion(account)+" (external, cli)"
 	audit.HeaderFingerprintFinalDefault = audit.DefaultHeaderTotal > 0 &&
 			audit.DefaultHeaderFinalMatchCount == audit.DefaultHeaderTotal &&
@@ -2054,7 +2054,7 @@ func applyAnthropicTelemetryPrivacyHeaderFingerprintWithAudit(req *http.Request,
 }
 
 // recordAnthropicTelemetryPrivacyProtection 记录一次账号级遥测隐私保护。
-// 这里的"保护一次"指某个 Anthropic OAuth/SetupToken 上游请求执行过正文、header 或 TLS
+// 这里的“保护一次”指某个 Anthropic OAuth/SetupToken 上游请求执行过正文、header 或 TLS
 // 任一维度的账号级隐私策略。即使请求本来没有 metadata.user_id、header 也已是默认值，
 // 只要 TLS 被强制收敛为官方默认指纹，也必须写入审计日志，便于管理员确认没有新增身份且
 // 账号仍以单一上游客户端形态出现。计数只按账号累加，不包含下游用户、原始会话、请求 ID、
@@ -2087,7 +2087,7 @@ func (s *GatewayService) recordAnthropicTelemetryPrivacyProtection(ctx context.C
 	}
 }
 
-// logAnthropicTelemetryPrivacyProtection 写入可在"运维监控 / 系统日志"检索的审计日志。
+// logAnthropicTelemetryPrivacyProtection 写入可在“运维监控 / 系统日志”检索的审计日志。
 // 日志会记录两类值：raw_* 是客户端入站的 Claude Code 遥测/指纹原始值，derived_* 是最终
 // 发往 Anthropic 的账号级伪装值。这样管理员能直接核对保护是否真实覆盖，同时确认同一账号
 // 始终收敛到同一 device/session/header/TLS 指纹。日志仍禁止记录认证 token、模型、消息正文
