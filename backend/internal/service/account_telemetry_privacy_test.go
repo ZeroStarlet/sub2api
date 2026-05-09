@@ -18,6 +18,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -1397,4 +1398,34 @@ func telemetryPrivacyReadRequestBody(t *testing.T, req *http.Request) []byte {
 	body, err := io.ReadAll(req.Body)
 	require.NoError(t, err)
 	return body
+}
+
+func TestGatewayService_BuildCountTokensRequest_TelemetryPrivacyForcesBillingHeaderFields(t *testing.T) {
+	// 与 messages 主链路对齐：count_tokens 也必须收敛 cc_entrypoint 与剥离 cc_workload
+	gin.SetMode(gin.TestMode)
+	account := telemetryPrivacyAnthropicAccount()
+	fp := telemetryPrivacyFingerprint()
+	cache := &telemetryPrivacyIdentityCacheStub{fingerprint: fp}
+	svc := &GatewayService{identityService: NewIdentityService(cache)}
+	c := telemetryPrivacyGinContext()
+	userID := FormatMetadataUserID("1111111111111111111111111111111111111111111111111111111111111111", "550e8400-e29b-41d4-a716-446655440000", "123e4567-e89b-12d3-a456-426614174000", "2.1.92")
+	bodyWithBilling := []byte(`{"model":"claude-3-7-sonnet-20250219","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.92.a3f; cc_entrypoint=sdk-cli; cc_workload=cron; cch=00000;"}],"metadata":{"user_id":` + strconvQuote(userID) + `},"messages":[]}`)
+
+	req, err := svc.buildCountTokensRequest(
+		context.Background(),
+		c,
+		account,
+		bodyWithBilling,
+		"oauth-token",
+		"oauth",
+		"claude-3-7-sonnet-20250219",
+		false,
+	)
+	require.NoError(t, err)
+
+	body := telemetryPrivacyReadRequestBody(t, req)
+	billingText := gjson.GetBytes(body, "system.0.text").String()
+	assert.Contains(t, billingText, "cc_entrypoint=cli", "count_tokens 未将 cc_entrypoint 收敛为 cli")
+	assert.NotContains(t, billingText, "sdk-cli", "cc_entrypoint 原始值 sdk-cli 未清除")
+	assert.NotContains(t, billingText, "cc_workload", "cc_workload 段未被剥离")
 }

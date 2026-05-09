@@ -201,7 +201,7 @@ func TestForceBillingEntrypointForTelemetryPrivacy(t *testing.T) {
 		assert.Equal(t, string(body), string(result))
 	})
 
-	t.Run("非 Anthropic OAuth 账号即使配置开关也不改写", func(t *testing.T) {
+	t.Run("Anthropic API Key 账号即使配置开关也不改写", func(t *testing.T) {
 		// API Key 类型账号不在 IsTelemetryPrivacyEnabled 的作用范围内
 		apiKeyAccount := &Account{
 			ID:       1,
@@ -214,6 +214,19 @@ func TestForceBillingEntrypointForTelemetryPrivacy(t *testing.T) {
 		assert.Equal(t, string(body), string(result))
 	})
 
+	t.Run("非 Anthropic 平台 OAuth 账号即使配置开关也不改写", func(t *testing.T) {
+		// OpenAI 平台 OAuth 账号不在 IsTelemetryPrivacyEnabled 的作用域内
+		openaiAccount := &Account{
+			ID:       1,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra:    map[string]any{"telemetry_privacy_enabled": true},
+		}
+		body := []byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.92.a3f; cc_entrypoint=sdk-cli; cch=00000;"}],"messages":[]}`)
+		result := forceBillingEntrypointForTelemetryPrivacy(body, openaiAccount)
+		assert.Equal(t, string(body), string(result))
+	})
+
 	t.Run("仅作用于 system billing block，user 消息中的同名字面量不变", func(t *testing.T) {
 		// cc_entrypoint= 出现在用户消息正文中的场景绝对不能被改写
 		body := []byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.92.a3f; cc_entrypoint=sdk-cli; cch=00000;"}],"messages":[{"role":"user","content":[{"type":"text","text":"my shell script logs cc_entrypoint=sdk-cli in stderr"}]}]}`)
@@ -222,6 +235,27 @@ func TestForceBillingEntrypointForTelemetryPrivacy(t *testing.T) {
 		assert.Contains(t, billingText, "cc_entrypoint=cli")
 		userText := gjson.GetBytes(result, "messages.0.content.0.text").String()
 		assert.Contains(t, userText, "cc_entrypoint=sdk-cli")
+	})
+
+	t.Run("启用遥测隐私但 body 无 system 字段时原样返回", func(t *testing.T) {
+		// body 无 system 字段时直接返回，不构造也不报错
+		body := []byte(`{"messages":[]}`)
+		result := forceBillingEntrypointForTelemetryPrivacy(body, enabledAccount)
+		assert.Equal(t, string(body), string(result))
+	})
+
+	t.Run("启用遥测隐私但 system 不是数组时原样返回", func(t *testing.T) {
+		// system 字段非数组时跳过，避免误改其它结构
+		body := []byte(`{"system":"plain string","messages":[]}`)
+		result := forceBillingEntrypointForTelemetryPrivacy(body, enabledAccount)
+		assert.Equal(t, string(body), string(result))
+	})
+
+	t.Run("启用遥测隐私但 system 中没有 billing header 块时原样返回", func(t *testing.T) {
+		// billing header 不存在时不会无中生有
+		body := []byte(`{"system":[{"type":"text","text":"You are Claude Code."}],"messages":[]}`)
+		result := forceBillingEntrypointForTelemetryPrivacy(body, enabledAccount)
+		assert.Equal(t, string(body), string(result))
 	})
 
 	t.Run("nil 账号原样返回", func(t *testing.T) {
@@ -276,6 +310,36 @@ func TestStripBillingWorkloadForTelemetryPrivacy(t *testing.T) {
 		assert.NotContains(t, billingText, "cc_workload")
 		userText := gjson.GetBytes(result, "messages.0.content.0.text").String()
 		assert.Contains(t, userText, "cc_workload=cron")
+	})
+
+	t.Run("非 Anthropic 平台 OAuth 账号即使配置开关也不改写", func(t *testing.T) {
+		openaiAccount := &Account{
+			ID:       1,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra:    map[string]any{"telemetry_privacy_enabled": true},
+		}
+		body := []byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.92.a3f; cc_entrypoint=cli; cc_workload=cron; cch=00000;"}],"messages":[]}`)
+		result := stripBillingWorkloadForTelemetryPrivacy(body, openaiAccount)
+		assert.Equal(t, string(body), string(result))
+	})
+
+	t.Run("启用遥测隐私但 body 无 system 字段时原样返回", func(t *testing.T) {
+		body := []byte(`{"messages":[]}`)
+		result := stripBillingWorkloadForTelemetryPrivacy(body, enabledAccount)
+		assert.Equal(t, string(body), string(result))
+	})
+
+	t.Run("启用遥测隐私但 system 不是数组时原样返回", func(t *testing.T) {
+		body := []byte(`{"system":"plain string","messages":[]}`)
+		result := stripBillingWorkloadForTelemetryPrivacy(body, enabledAccount)
+		assert.Equal(t, string(body), string(result))
+	})
+
+	t.Run("启用遥测隐私但 system 中没有 billing header 块时原样返回", func(t *testing.T) {
+		body := []byte(`{"system":[{"type":"text","text":"You are Claude Code."}],"messages":[]}`)
+		result := stripBillingWorkloadForTelemetryPrivacy(body, enabledAccount)
+		assert.Equal(t, string(body), string(result))
 	})
 }
 

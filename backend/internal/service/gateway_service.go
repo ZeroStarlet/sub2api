@@ -1477,24 +1477,35 @@ type anthropicTelemetryPrivacyRawValues struct {
 	BillingWorkload          string // 客户端入站时 billing header 中的 cc_workload 值
 }
 
+// billingHeaderFieldExtractRegexes 预编译 billing header 字段提取正则。
+// 白名单方式注册，仅当 key 在 map 中时才执行匹配；未注册 key 直接返回空串，
+// 避免动态拼正则在审计热路径重复编译。与 force/strip helper 的字段定界规则
+// 保持完全一致（值由 ; 或 " 截断）。
+var billingHeaderFieldExtractRegexes = map[string]*regexp.Regexp{
+	"cc_entrypoint": regexp.MustCompile(`\bcc_entrypoint=([^;"]*)`),
+	"cc_workload":   regexp.MustCompile(`\bcc_workload=([^;"]*)`),
+}
+
 // extractBillingHeaderField 从 system 数组的 billing attribution block 中读取
-// key=value 字段值（key 不含 = 号）。找不到时返回空串。仅用于审计采集，
+// 已知 key 的值（不含 = 号）。找不到或 key 未注册时返回空串；仅用于审计采集，
 // 与 force/strip 用的正则保持同样的字段定界规则（值由 ; 或 " 截断）。
 func extractBillingHeaderField(body []byte, key string) string {
+	re, ok := billingHeaderFieldExtractRegexes[key]
+	if !ok {
+		return ""
+	}
 	systemResult := gjson.GetBytes(body, "system")
 	if !systemResult.Exists() || !systemResult.IsArray() {
 		return ""
 	}
-
 	var value string
 	systemResult.ForEach(func(_, item gjson.Result) bool {
 		text := item.Get("text")
 		if text.Exists() && text.Type == gjson.String &&
 			strings.HasPrefix(text.String(), "x-anthropic-billing-header") {
-			re := regexp.MustCompile(`\b` + regexp.QuoteMeta(key) + `=([^;"]*)`)
 			if matches := re.FindStringSubmatch(text.String()); len(matches) >= 2 {
 				value = matches[1]
-				return false // 命中首个 billing block 即返回
+				return false
 			}
 		}
 		return true
