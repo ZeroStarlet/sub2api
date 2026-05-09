@@ -1378,6 +1378,10 @@ type anthropicTelemetryPrivacyBodyAudit struct {
 	MetadataUserIDProtectionPass   bool
 	MetadataUserIDVersionPinned    bool
 	MetadataPrivacyIdentityUnified bool
+	BillingEntrypointPresent       bool // 客户端原始 billing header 中 cc_entrypoint 字段是否存在
+	BillingEntrypointProtected     bool // 最终 billing header 中 cc_entrypoint 已收敛为 cli
+	BillingWorkloadPresent         bool // 客户端原始 billing header 中是否带 cc_workload 段
+	BillingWorkloadStripped        bool // 最终 billing header 中 cc_workload 段已剥离
 }
 
 type anthropicTelemetryPrivacyHeaderAudit struct {
@@ -1444,6 +1448,7 @@ type anthropicTelemetryPrivacyDerivedValues struct {
 	XStainlessRetryCount      string
 	XStainlessTimeout         string
 	TLSFingerprintProfileName string
+	BillingEntrypoint        string // 最终 billing header 中实际使用的 cc_entrypoint 值（保护开启时恒为 cli）
 }
 
 type anthropicTelemetryPrivacyRawValues struct {
@@ -1468,6 +1473,33 @@ type anthropicTelemetryPrivacyRawValues struct {
 	XStainlessRuntimeVersion string
 	XStainlessRetryCount     string
 	XStainlessTimeout        string
+	BillingEntrypoint        string // 客户端入站时 billing header 中的 cc_entrypoint 值
+	BillingWorkload          string // 客户端入站时 billing header 中的 cc_workload 值
+}
+
+// extractBillingHeaderField 从 system 数组的 billing attribution block 中读取
+// key=value 字段值（key 不含 = 号）。找不到时返回空串。仅用于审计采集，
+// 与 force/strip 用的正则保持同样的字段定界规则（值由 ; 或 " 截断）。
+func extractBillingHeaderField(body []byte, key string) string {
+	systemResult := gjson.GetBytes(body, "system")
+	if !systemResult.Exists() || !systemResult.IsArray() {
+		return ""
+	}
+
+	var value string
+	systemResult.ForEach(func(_, item gjson.Result) bool {
+		text := item.Get("text")
+		if text.Exists() && text.Type == gjson.String &&
+			strings.HasPrefix(text.String(), "x-anthropic-billing-header") {
+			re := regexp.MustCompile(`\b` + regexp.QuoteMeta(key) + `=([^;"]*)`)
+			if matches := re.FindStringSubmatch(text.String()); len(matches) >= 2 {
+				value = matches[1]
+				return false // 命中首个 billing block 即返回
+			}
+		}
+		return true
+	})
+	return value
 }
 
 // sanitizeAnthropicTelemetryPrivacyBody 在账号级遥测隐私开关开启时改写 body 中的
@@ -1495,7 +1527,7 @@ func sanitizeAnthropicTelemetryPrivacyBody(body []byte, account *Account) ([]byt
 // sanitizeAnthropicTelemetryPrivacyBodyWithAudit 返回请求正文保护的审计结果。
 // 该函数只负责改写请求正文并产出布尔校验、格式判断和原因码，不直接写系统日志；
 // 原始值和派生值由调用方在改写前后分别采集，最终统一写入管理员系统日志。这样可以保证
-// “原始客户端输入”和“最终上游输出”不会混在同一个阶段里，便于排查同一账号是否稳定收敛。
+// "原始客户端输入"和"最终上游输出"不会混在同一个阶段里，便于排查同一账号是否稳定收敛。
 // 注意：这里仍不得保存模型、消息正文或 token，它们不属于遥测身份保护的必要审计材料。
 func sanitizeAnthropicTelemetryPrivacyBodyWithAudit(body []byte, account *Account) ([]byte, *ParsedUserID, anthropicTelemetryPrivacyBodyAudit) {
 	audit := anthropicTelemetryPrivacyBodyAudit{
@@ -1504,6 +1536,10 @@ func sanitizeAnthropicTelemetryPrivacyBodyWithAudit(body []byte, account *Accoun
 	if account == nil || !account.IsTelemetryPrivacyEnabled() {
 		return body, nil, audit
 	}
+	// 从客户端入站 body 采集 billing header "是否存在"的原始快照；
+	// 是否已保护/剥离由 fillAnthropicTelemetryPrivacyBillingAudit 在改写后填补。
+	audit.BillingEntrypointPresent = extractBillingHeaderField(body, "cc_entrypoint") != ""
+	audit.BillingWorkloadPresent = extractBillingHeaderField(body, "cc_workload") != ""
 	userIDResult := gjson.GetBytes(body, "metadata.user_id")
 	if !userIDResult.Exists() {
 		// 遥测隐私开启时注入匿名 metadata.user_id，保持与真实 Claude Code 客户端一致的外观。
@@ -1577,7 +1613,7 @@ func formatAnthropicTelemetryPrivacyUserID(account *Account) string {
 
 // anthropicTelemetryPrivacyTLSProfile 返回遥测隐私保护使用的 TLS 指纹。
 // 隐私保护开启时必须使用内置 Node.js/Claude Code 默认 Profile，不能沿用账号自定义或随机模板：
-// 自定义/随机模板会让同一个上游账号呈现额外 TLS 身份差异，和“不要让上游觉得很多人在用”冲突。
+// 自定义/随机模板会让同一个上游账号呈现额外 TLS 身份差异，和"不要让上游觉得很多人在用"冲突。
 func anthropicTelemetryPrivacyTLSProfile(account *Account) (*tlsfingerprint.Profile, anthropicTelemetryPrivacyTLSAudit) {
 	audit := anthropicTelemetryPrivacyTLSAudit{
 		Result: "未启用遥测隐私保护",
@@ -1626,11 +1662,29 @@ func fillAnthropicTelemetryPrivacyBodyAudit(audit *anthropicTelemetryPrivacyBody
 		audit.MetadataUserIDVersionPinned
 }
 
-// anthropicTelemetryPrivacyBodyProtectionPass 返回“请求正文隐私保护是否通过”的最终审计结论。
+// fillAnthropicTelemetryPrivacyBillingAudit 在 forceBillingCCVersionFingerprint /
+// forceBillingEntrypointForTelemetryPrivacy / stripBillingWorkloadForTelemetryPrivacy
+// 全部执行完毕后调用，根据最终 body 与原始 raw 值刷新 billing 维度的审计字段。
+func fillAnthropicTelemetryPrivacyBillingAudit(audit *anthropicTelemetryPrivacyBodyAudit, finalBody []byte, rawValues anthropicTelemetryPrivacyRawValues) {
+	if audit == nil {
+		return
+	}
+	audit.BillingEntrypointPresent = rawValues.BillingEntrypoint != ""
+	audit.BillingWorkloadPresent = rawValues.BillingWorkload != ""
+	finalEntrypoint := extractBillingHeaderField(finalBody, "cc_entrypoint")
+	audit.BillingEntrypointProtected = finalEntrypoint == "cli"
+	audit.BillingWorkloadStripped = extractBillingHeaderField(finalBody, "cc_workload") == ""
+}
+
+// anthropicTelemetryPrivacyBodyProtectionPass 返回"请求正文隐私保护是否通过"的最终审计结论。
 // metadata.user_id 存在时，必须确认最终 device_id、account_uuid、session_id 和版本全部符合
 // metadata.user_id 缺失时，由于当前实现会在遥测隐私开启时注入匿名账号级身份，
 // 此时 MetadataUserIDPresent 已被设为 true 且 MetadataUserIDProtectionPass 为 true，
 // 因此缺失场景也属于正文隐私通过。这个结论只用于日志和总体校验，不改变请求正文。
+//
+// 注意：billing 维度的 cc_entrypoint / cc_workload 处理结果不影响 pass/fail 判定。
+// BodyProtectionPass 仍以 metadata.user_id 为唯一判定基准，billing 信息仅做审计记录，
+// 与 cc_version fp 当前不被纳入 pass/fail 的现状一致。
 func anthropicTelemetryPrivacyBodyProtectionPass(audit anthropicTelemetryPrivacyBodyAudit) bool {
 	return !audit.MetadataUserIDPresent || audit.MetadataUserIDProtectionPass
 }
@@ -1684,7 +1738,7 @@ func anthropicTelemetryPrivacyAccountUUID(account *Account) string {
 
 // buildAnthropicTelemetryPrivacyDerivedValues 返回最终会上游可见的账号级伪装值。
 // 这些值不是客户端原始值，而是由 sub2api 账号 ID、内置 Claude Code 默认头指纹和固定
-// TLS profile 派生；因此可用于管理员在系统日志中核对“同一账号是否始终同一身份指纹”。
+// TLS profile 派生；因此可用于管理员在系统日志中核对"同一账号是否始终同一身份指纹"。
 // 注意：本函数只从已经完成隐私覆盖的上游请求读取最终 header，不读取请求正文、认证 token
 // 或下游用户信息；metadata.user_id、device_id 和 session_id 只能来自账号级派生函数。
 func buildAnthropicTelemetryPrivacyDerivedValues(account *Account, req *http.Request, bodyAudit anthropicTelemetryPrivacyBodyAudit) anthropicTelemetryPrivacyDerivedValues {
@@ -1712,6 +1766,7 @@ func buildAnthropicTelemetryPrivacyDerivedValues(account *Account, req *http.Req
 		XStainlessRetryCount:      claude.DefaultHeaders["X-Stainless-Retry-Count"],
 		XStainlessTimeout:         claude.DefaultHeaders["X-Stainless-Timeout"],
 		TLSFingerprintProfileName: "Built-in Default (Node.js 24.x)",
+		BillingEntrypoint:        "cli",
 	}
 	if bodyAudit.MetadataUserIDProtectionPass {
 		values.MetadataUserID = metadataUserIDCandidate
@@ -1781,13 +1836,15 @@ func buildAnthropicTelemetryPrivacyRawValues(body []byte, headers http.Header) a
 		values.XStainlessRetryCount = getHeaderRaw(headers, "X-Stainless-Retry-Count")
 		values.XStainlessTimeout = getHeaderRaw(headers, "X-Stainless-Timeout")
 	}
+	values.BillingEntrypoint = extractBillingHeaderField(body, "cc_entrypoint")
+	values.BillingWorkload = extractBillingHeaderField(body, "cc_workload")
 	return values
 }
 
 // captureAnthropicTelemetryPrivacyRawValues 在真正的客户端入口处保存 raw_* 审计快照。
 // 主 /v1/messages、count_tokens 和 OpenAI 兼容入口在进入 mimicry、模型映射、cache_control 改写、
 // metadata 注入之前调用本函数；后续构建上游请求时只能复用该快照，避免把中间态误记为
-// “客户端原始值”。当 c 为 nil 时返回快照但无法缓存，调用方后续会退化为就地采集。
+// "客户端原始值"。当 c 为 nil 时返回快照但无法缓存，调用方后续会退化为就地采集。
 func captureAnthropicTelemetryPrivacyRawValues(c *gin.Context, body []byte) anthropicTelemetryPrivacyRawValues {
 	headers := http.Header{}
 	if c != nil && c.Request != nil {
@@ -1832,7 +1889,7 @@ func sanitizeAnthropicTelemetryPrivacyHeaders(req *http.Request, account *Accoun
 // sanitizeAnthropicTelemetryPrivacyHeadersWithAudit 记录 header 保护是否真实落地。
 // 它只比较处理前后的状态并输出布尔结论，不负责写具体 header 值；具体 raw/derived 值由
 // buildAnthropicTelemetryPrivacyRawValues 和 buildAnthropicTelemetryPrivacyDerivedValues 分阶段采集。
-// 这样 header 覆盖逻辑只关心“是否保护成功”，日志逻辑只关心“管理员需要看到什么审计值”，
+// 这样 header 覆盖逻辑只关心"是否保护成功"，日志逻辑只关心"管理员需要看到什么审计值"，
 // 避免在同一个函数里混入改写、副作用和日志策略。
 func sanitizeAnthropicTelemetryPrivacyHeadersWithAudit(req *http.Request, account *Account, userID *ParsedUserID) (bool, anthropicTelemetryPrivacyHeaderAudit) {
 	audit := anthropicTelemetryPrivacyHeaderAudit{
@@ -1857,7 +1914,7 @@ func sanitizeAnthropicTelemetryPrivacyHeadersWithAudit(req *http.Request, accoun
 	// 因为 applyAnthropicTelemetryPrivacyHeaderFingerprintWithAudit 内部的审计字段
 	// 是以 claude.DefaultHeaders 为基准计算的，而自定义 CLI 版本会使用不同的
 	// User-Agent，因此必须在覆盖后重新计算受影响的聚合审计字段，避免管理员
-	// 因 stale 审计字段误判“header 指纹保护未通过”。
+	// 因 stale 审计字段误判"header 指纹保护未通过"。
 	audit.UserAgentFinalDefault = getHeaderRaw(req.Header, "User-Agent") == "claude-cli/"+anthropicTelemetryPrivacyCLIVersion(account)+" (external, cli)"
 	audit.HeaderFingerprintFinalDefault = audit.DefaultHeaderTotal > 0 &&
 			audit.DefaultHeaderFinalMatchCount == audit.DefaultHeaderTotal &&
@@ -1997,7 +2054,7 @@ func applyAnthropicTelemetryPrivacyHeaderFingerprintWithAudit(req *http.Request,
 }
 
 // recordAnthropicTelemetryPrivacyProtection 记录一次账号级遥测隐私保护。
-// 这里的“保护一次”指某个 Anthropic OAuth/SetupToken 上游请求执行过正文、header 或 TLS
+// 这里的"保护一次"指某个 Anthropic OAuth/SetupToken 上游请求执行过正文、header 或 TLS
 // 任一维度的账号级隐私策略。即使请求本来没有 metadata.user_id、header 也已是默认值，
 // 只要 TLS 被强制收敛为官方默认指纹，也必须写入审计日志，便于管理员确认没有新增身份且
 // 账号仍以单一上游客户端形态出现。计数只按账号累加，不包含下游用户、原始会话、请求 ID、
@@ -2030,7 +2087,7 @@ func (s *GatewayService) recordAnthropicTelemetryPrivacyProtection(ctx context.C
 	}
 }
 
-// logAnthropicTelemetryPrivacyProtection 写入可在“运维监控 / 系统日志”检索的审计日志。
+// logAnthropicTelemetryPrivacyProtection 写入可在"运维监控 / 系统日志"检索的审计日志。
 // 日志会记录两类值：raw_* 是客户端入站的 Claude Code 遥测/指纹原始值，derived_* 是最终
 // 发往 Anthropic 的账号级伪装值。这样管理员能直接核对保护是否真实覆盖，同时确认同一账号
 // 始终收敛到同一 device/session/header/TLS 指纹。日志仍禁止记录认证 token、模型、消息正文
@@ -2079,6 +2136,12 @@ func logAnthropicTelemetryPrivacyProtection(account *Account, req *http.Request,
 		"metadata_session_id_strategy":          "按账号编号派生单一稳定会话",
 		"metadata_user_id_version_pinned":       bodyAudit.MetadataUserIDVersionPinned,
 		"metadata_privacy_identity_unified":     bodyAudit.MetadataPrivacyIdentityUnified,
+		"billing_entrypoint_present":           bodyAudit.BillingEntrypointPresent,
+		"billing_entrypoint_protected":         bodyAudit.BillingEntrypointProtected,
+		"billing_entrypoint_strategy":          "强制使用官方交互式 CLI 入口",
+		"billing_workload_present":             bodyAudit.BillingWorkloadPresent,
+		"billing_workload_stripped":            bodyAudit.BillingWorkloadStripped,
+		"billing_workload_strategy":            "剥离 cc_workload，回归无标签外观",
 		"raw_values_logged":                     true,
 		"raw_values_logged_scope":               "记录客户端入站 Claude Code 遥测与指纹字段，不记录认证值、模型或请求正文",
 		"raw_metadata_user_id":                  rawValues.MetadataUserID,
@@ -2101,6 +2164,8 @@ func logAnthropicTelemetryPrivacyProtection(account *Account, req *http.Request,
 		"raw_x_stainless_runtime_version":       rawValues.XStainlessRuntimeVersion,
 		"raw_x_stainless_retry_count":           rawValues.XStainlessRetryCount,
 		"raw_x_stainless_timeout":               rawValues.XStainlessTimeout,
+		"raw_billing_entrypoint":               rawValues.BillingEntrypoint,
+		"raw_billing_workload":                 rawValues.BillingWorkload,
 		"derived_values_logged":                 true,
 		"derived_values_logged_scope":           "记录最终发往上游的账号级伪装派生值",
 		"derived_metadata_user_id":              derivedValues.MetadataUserID,
@@ -2169,6 +2234,7 @@ func logAnthropicTelemetryPrivacyProtection(account *Account, req *http.Request,
 		"tls_fingerprint_result":                tlsAudit.Result,
 		"tls_fingerprint_strategy":              "强制使用内置官方客户端默认 TLS 指纹",
 		"derived_tls_fingerprint_profile":       derivedValues.TLSFingerprintProfileName,
+		"derived_billing_entrypoint":           derivedValues.BillingEntrypoint,
 		"model_or_messages_body_protected":      false,
 		"sensitive_values_logged":               true,
 		"sensitive_values_logged_reason":        "按管理员审计要求记录客户端原始遥测值和账号级伪装派生值，不记录认证值、模型或请求正文",
@@ -6884,6 +6950,11 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	// 遥测隐私保护：将计费头 cc_version 指纹替换为账号级确定性值
 	// 必须在 CCH 签名之前执行，否则签名与正文不一致会被上游检测
 	body = forceBillingCCVersionFingerprint(body, account)
+	// 遥测隐私：cc_entrypoint 与 cc_workload 收敛，必须在 CCH 签名前完成
+	body = forceBillingEntrypointForTelemetryPrivacy(body, account)
+	body = stripBillingWorkloadForTelemetryPrivacy(body, account)
+	// 遥测隐私：填完 billing 维度的审计字段（Present/Protected/Stripped），必须在 CCH 签名前完成
+	fillAnthropicTelemetryPrivacyBillingAudit(&telemetryPrivacyBodyAudit, body, telemetryPrivacyRawValues)
 
 	// CCH 签名：将 cch=00000 占位符替换为 xxHash64 签名（需在所有 body 修改之后）
 	if enableCCH {
@@ -10098,6 +10169,11 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	// 遥测隐私保护：将计费头 cc_version 指纹替换为账号级确定性值
 	// 必须在 CCH 签名之前执行，否则签名与正文不一致会被上游检测
 	body = forceBillingCCVersionFingerprint(body, account)
+	// 遥测隐私：cc_entrypoint 与 cc_workload 收敛，必须在 CCH 签名前完成
+	body = forceBillingEntrypointForTelemetryPrivacy(body, account)
+	body = stripBillingWorkloadForTelemetryPrivacy(body, account)
+	// 遥测隐私：填完 billing 维度的审计字段（Present/Protected/Stripped），必须在 CCH 签名前完成
+	fillAnthropicTelemetryPrivacyBillingAudit(&ctTelemetryPrivacyBodyAudit, body, ctTelemetryPrivacyRawValues)
 
 	if ctEnableCCH {
 		body = signBillingHeaderCCH(body)
