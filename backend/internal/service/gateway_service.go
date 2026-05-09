@@ -1410,6 +1410,10 @@ type anthropicTelemetryPrivacyHeaderAudit struct {
 	AuthorizationPreserved          bool
 	AnthropicBetaPreserved          bool
 	ContentTypePreserved            bool
+	AcceptLanguagePresent           bool // 客户端原始请求是否带 Accept-Language
+	AcceptLanguageStripped          bool // 最终上游请求中 Accept-Language 是否已删除
+	AcceptEncodingPresent           bool // 客户端原始请求是否带 Accept-Encoding
+	AcceptEncodingStripped          bool // 最终上游请求中 Accept-Encoding 是否已删除
 	HeaderPrivacyProtectionPass     bool
 }
 
@@ -1449,6 +1453,8 @@ type anthropicTelemetryPrivacyDerivedValues struct {
 	XStainlessTimeout         string
 	TLSFingerprintProfileName string
 	BillingEntrypoint        string // 最终 billing header 中实际使用的 cc_entrypoint 值（保护开启时恒为 cli）
+	AcceptLanguage           string // 最终上游请求中的 Accept-Language（保护开启时恒为空串）
+	AcceptEncoding           string // 最终上游请求中的 Accept-Encoding（保护开启时恒为空串）
 }
 
 type anthropicTelemetryPrivacyRawValues struct {
@@ -1475,6 +1481,8 @@ type anthropicTelemetryPrivacyRawValues struct {
 	XStainlessTimeout        string
 	BillingEntrypoint        string // 客户端入站时 billing header 中的 cc_entrypoint 值
 	BillingWorkload          string // 客户端入站时 billing header 中的 cc_workload 值
+	AcceptLanguage           string // 客户端入站请求中的 Accept-Language（用于审计核对）
+	AcceptEncoding           string // 客户端入站请求中的 Accept-Encoding（用于审计核对）
 }
 
 // billingHeaderFieldExtractRegexes 预编译 billing header 字段提取正则。
@@ -1778,6 +1786,8 @@ func buildAnthropicTelemetryPrivacyDerivedValues(account *Account, req *http.Req
 		XStainlessTimeout:         claude.DefaultHeaders["X-Stainless-Timeout"],
 		TLSFingerprintProfileName: "Built-in Default (Node.js 24.x)",
 		BillingEntrypoint:        "cli",
+		AcceptLanguage:           "",
+		AcceptEncoding:           "",
 	}
 	if bodyAudit.MetadataUserIDProtectionPass {
 		values.MetadataUserID = metadataUserIDCandidate
@@ -1790,6 +1800,8 @@ func buildAnthropicTelemetryPrivacyDerivedValues(account *Account, req *http.Req
 		values.XClientRequestID = getHeaderRaw(req.Header, "x-client-request-id")
 		values.UserAgent = getHeaderRaw(req.Header, "User-Agent")
 		values.Accept = getHeaderRaw(req.Header, "Accept")
+		values.AcceptLanguage = getHeaderRaw(req.Header, "Accept-Language")
+		values.AcceptEncoding = getHeaderRaw(req.Header, "Accept-Encoding")
 		values.XApp = getHeaderRaw(req.Header, "X-App")
 		values.DirectBrowserAccess = getHeaderRaw(req.Header, "Anthropic-Dangerous-Direct-Browser-Access")
 		values.XStainlessLang = getHeaderRaw(req.Header, "X-Stainless-Lang")
@@ -1838,6 +1850,8 @@ func buildAnthropicTelemetryPrivacyRawValues(body []byte, headers http.Header) a
 		values.Accept = getHeaderRaw(headers, "Accept")
 		values.XApp = getHeaderRaw(headers, "X-App")
 		values.DirectBrowserAccess = getHeaderRaw(headers, "Anthropic-Dangerous-Direct-Browser-Access")
+		values.AcceptLanguage = getHeaderRaw(headers, "Accept-Language")
+		values.AcceptEncoding = getHeaderRaw(headers, "Accept-Encoding")
 		values.XStainlessLang = getHeaderRaw(headers, "X-Stainless-Lang")
 		values.XStainlessPackageVersion = getHeaderRaw(headers, "X-Stainless-Package-Version")
 		values.XStainlessOS = getHeaderRaw(headers, "X-Stainless-OS")
@@ -1937,6 +1951,8 @@ func sanitizeAnthropicTelemetryPrivacyHeadersWithAudit(req *http.Request, accoun
 	audit.HeaderPrivacyProtectionPass = audit.HeaderFingerprintFinalDefault &&
 			audit.SessionHeaderFinalProtected &&
 			audit.ClientRequestIDRegenerated &&
+			audit.AcceptLanguageStripped &&
+			audit.AcceptEncodingStripped &&
 			audit.AuthorizationPreserved &&
 			audit.AnthropicBetaPreserved &&
 			audit.ContentTypePreserved
@@ -1961,12 +1977,28 @@ func sanitizeAnthropicTelemetryPrivacyHeadersWithAudit(req *http.Request, accoun
 		getHeaderRaw(req.Header, "x-client-request-id") != requestIDBefore
 	protected = true
 
+	// 遥测隐私：删除 Accept-Language 与 Accept-Encoding，消除区域 / 压缩偏好维度。
+	// 真实 Claude Code Node 客户端不显式发送 Accept-Language；Accept-Encoding 由 Go transport
+	// 在外层请求阶段按需设置，缺省时 transport 会自动加 gzip 并透明解压（参考
+	// repository/http_upstream.go 中关于 accept-encoding 的注释）。删除两者后，
+	// 多用户共享同一上游账号时不会再因 locale / 压缩偏好出现头部分化。
+	acceptLanguageBefore := getHeaderRaw(req.Header, "Accept-Language")
+	audit.AcceptLanguagePresent = acceptLanguageBefore != ""
+	delHeaderRaw(req.Header, "Accept-Language")
+	audit.AcceptLanguageStripped = getHeaderRaw(req.Header, "Accept-Language") == ""
+	acceptEncodingBefore := getHeaderRaw(req.Header, "Accept-Encoding")
+	audit.AcceptEncodingPresent = acceptEncodingBefore != ""
+	delHeaderRaw(req.Header, "Accept-Encoding")
+	audit.AcceptEncodingStripped = getHeaderRaw(req.Header, "Accept-Encoding") == ""
+
 	audit.AuthorizationPreserved = getHeaderRaw(req.Header, "authorization") == authorizationBefore
 	audit.AnthropicBetaPreserved = getHeaderRaw(req.Header, "anthropic-beta") == anthropicBetaBefore
 	audit.ContentTypePreserved = getHeaderRaw(req.Header, "content-type") == contentTypeBefore
 	audit.HeaderPrivacyProtectionPass = audit.HeaderFingerprintFinalDefault &&
 		audit.SessionHeaderFinalProtected &&
 		audit.ClientRequestIDRegenerated &&
+		audit.AcceptLanguageStripped &&
+		audit.AcceptEncodingStripped &&
 		audit.AuthorizationPreserved &&
 		audit.AnthropicBetaPreserved &&
 		audit.ContentTypePreserved
@@ -2164,6 +2196,8 @@ func logAnthropicTelemetryPrivacyProtection(account *Account, req *http.Request,
 		"raw_x_claude_code_session_id":          rawValues.XClaudeCodeSessionID,
 		"raw_x_client_request_id":               rawValues.XClientRequestID,
 		"raw_accept":                            rawValues.Accept,
+		"raw_accept_language":                  rawValues.AcceptLanguage,
+		"raw_accept_encoding":                  rawValues.AcceptEncoding,
 		"raw_user_agent":                        rawValues.UserAgent,
 		"raw_x_app":                             rawValues.XApp,
 		"raw_direct_browser_access":             rawValues.DirectBrowserAccess,
@@ -2197,6 +2231,12 @@ func logAnthropicTelemetryPrivacyProtection(account *Account, req *http.Request,
 		"header_default_changed_count":          headerAudit.DefaultHeaderChangedCount,
 		"header_default_final_match_count":      headerAudit.DefaultHeaderFinalMatchCount,
 		"accept_header_final_default":           headerAudit.AcceptHeaderFinalDefault,
+		"accept_language_present":              headerAudit.AcceptLanguagePresent,
+		"accept_language_stripped":             headerAudit.AcceptLanguageStripped,
+		"accept_language_strategy":             "删除客户端 Accept-Language，消除区域偏好",
+		"accept_encoding_present":              headerAudit.AcceptEncodingPresent,
+		"accept_encoding_stripped":             headerAudit.AcceptEncodingStripped,
+		"accept_encoding_strategy":             "删除客户端 Accept-Encoding，回退到 Go transport 默认 gzip 自动解压",
 		"user_agent_final_default":              headerAudit.UserAgentFinalDefault,
 		"user_agent_changed":                    headerAudit.UserAgentChanged,
 		"user_agent_strategy":                   "官方客户端默认值",
@@ -2220,6 +2260,8 @@ func logAnthropicTelemetryPrivacyProtection(account *Account, req *http.Request,
 		"derived_x_client_request_id":           derivedValues.XClientRequestID,
 		"x_client_request_id_strategy":          "由中转服务重新生成单次请求编号",
 		"derived_accept":                        derivedValues.Accept,
+		"derived_accept_language":              derivedValues.AcceptLanguage,
+		"derived_accept_encoding":              derivedValues.AcceptEncoding,
 		"derived_user_agent":                    derivedValues.UserAgent,
 		"derived_x_app":                         derivedValues.XApp,
 		"derived_direct_browser_access":         derivedValues.DirectBrowserAccess,

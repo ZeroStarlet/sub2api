@@ -1429,3 +1429,71 @@ func TestGatewayService_BuildCountTokensRequest_TelemetryPrivacyForcesBillingHea
 	assert.NotContains(t, billingText, "sdk-cli", "cc_entrypoint 原始值 sdk-cli 未清除")
 	assert.NotContains(t, billingText, "cc_workload", "cc_workload 段未被剥离")
 }
+
+func TestSanitizeAnthropicTelemetryPrivacyHeaders_StripsAcceptLanguageAndEncoding(t *testing.T) {
+	t.Run("启用遥测隐私时同时存在 Accept-Language 与 Accept-Encoding 都被删除", func(t *testing.T) {
+		// 客户端区域和压缩偏好均不应到达上游
+		account := telemetryPrivacyAnthropicAccount()
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		setHeaderRaw(req.Header, "Accept-Language", "zh-CN,zh;q=0.9")
+		setHeaderRaw(req.Header, "Accept-Encoding", "gzip, deflate, br")
+
+		protected, audit := sanitizeAnthropicTelemetryPrivacyHeadersWithAudit(req, account, nil)
+		require.True(t, protected)
+		require.True(t, audit.AcceptLanguagePresent)
+		require.True(t, audit.AcceptLanguageStripped)
+		require.True(t, audit.AcceptEncodingPresent)
+		require.True(t, audit.AcceptEncodingStripped)
+		assert.Equal(t, "", getHeaderRaw(req.Header, "Accept-Language"))
+		assert.Equal(t, "", getHeaderRaw(req.Header, "Accept-Encoding"))
+		require.True(t, audit.HeaderPrivacyProtectionPass)
+	})
+
+	t.Run("启用遥测隐私且只携带 Accept-Language 时 Stripped 字段成立", func(t *testing.T) {
+		// 仅 Accept-Language 存在，Accept-Encoding 缺省时两个 Stripped 都应为 true
+		account := telemetryPrivacyAnthropicAccount()
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		setHeaderRaw(req.Header, "Accept-Language", "en-US,en;q=0.9")
+
+		protected, audit := sanitizeAnthropicTelemetryPrivacyHeadersWithAudit(req, account, nil)
+		require.True(t, protected)
+		require.True(t, audit.AcceptLanguagePresent)
+		require.True(t, audit.AcceptLanguageStripped)
+		require.False(t, audit.AcceptEncodingPresent)
+		require.True(t, audit.AcceptEncodingStripped)
+		assert.Equal(t, "", getHeaderRaw(req.Header, "Accept-Language"))
+	})
+
+	t.Run("启用遥测隐私但两头都缺省时审计 Stripped 仍为 true", func(t *testing.T) {
+		// 删除一个不存在的头不会引入异常；最终 post-state 仍为空，审计通过
+		account := telemetryPrivacyAnthropicAccount()
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+		protected, audit := sanitizeAnthropicTelemetryPrivacyHeadersWithAudit(req, account, nil)
+		require.True(t, protected)
+		require.False(t, audit.AcceptLanguagePresent)
+		require.True(t, audit.AcceptLanguageStripped)
+		require.False(t, audit.AcceptEncodingPresent)
+		require.True(t, audit.AcceptEncodingStripped)
+	})
+
+	t.Run("遥测隐私关闭时两头原样保留", func(t *testing.T) {
+		// 关闭保护时 Accept-Language 和 Accept-Encoding 不得被删除
+		disabledAccount := &Account{
+			ID:       42,
+			Platform: PlatformAnthropic,
+			Type:     AccountTypeOAuth,
+			Extra:    map[string]any{"telemetry_privacy_enabled": false},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		setHeaderRaw(req.Header, "Accept-Language", "ja-JP,ja;q=0.9")
+		setHeaderRaw(req.Header, "Accept-Encoding", "br")
+
+		protected, audit := sanitizeAnthropicTelemetryPrivacyHeadersWithAudit(req, disabledAccount, nil)
+		require.False(t, protected)
+		assert.Equal(t, "ja-JP,ja;q=0.9", getHeaderRaw(req.Header, "Accept-Language"))
+		assert.Equal(t, "br", getHeaderRaw(req.Header, "Accept-Encoding"))
+		require.False(t, audit.AcceptLanguageStripped)
+		require.False(t, audit.AcceptEncodingStripped)
+	})
+}
