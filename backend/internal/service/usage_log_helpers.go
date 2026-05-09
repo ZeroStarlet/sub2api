@@ -30,7 +30,7 @@ func optionalTrimmedStringPtr(raw string) *string {
 //   - 多次调用幂等：再次传入已脱敏的空串，输出仍是空串
 //   - 不会修改 account 或其它共享对象，可安全在并发请求中调用
 //
-// 调用面与覆盖范围（与 Codex 审查口径对齐）：
+// 调用面与覆盖范围：
 //   - 当前唯一调用点是 GatewayService.recordUsageCore → buildRecordUsageLog 共享写入路径
 //     （gateway_service.go），Anthropic 标准入口、Gemini、Antigravity 都经过此路径
 //   - openai_gateway_service.go 维护独立的 UsageLog 构造，但只调度 PlatformOpenAI 账号，
